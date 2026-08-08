@@ -562,63 +562,51 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
 /**
  * Live search wrapper with high-availability static HTML fallback & 1h caching
  */
+const inFlightSearch = new Map<string, Promise<CourseSummary[]>>();
+
 export async function searchCourses(
   query: string,
   department?: string,
   allowFallback: boolean = true
 ): Promise<CourseSummary[]> {
-  const cacheKey = `course_search:${query.toLowerCase().trim()}:${(department || '').toLowerCase().trim()}`;
-  const cached = globalCache.get<CourseSummary[]>(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
   const qLower = query.toLowerCase().trim();
   const deptLower = department ? department.toLowerCase().trim() : undefined;
+  const cacheKey = `course_search:${qLower}:${(department || '').toLowerCase().trim()}`;
 
-  const url = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
-    R1C2: query,
-    ...(department ? { R1C8: department } : {}),
-  });
+  if (allowFallback) {
+    const cached = globalCache.get<CourseSummary[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
 
-  let results: CourseSummary[];
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
-      redirect: 'follow',
+    const existing = inFlightSearch.get(cacheKey);
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const promise = (async () => {
+    const url = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
+      R1C2: query,
+      ...(department ? { R1C8: department } : {}),
     });
 
-    if (response.ok) {
-      const html = await response.text();
-      const parsed = parseCourseSearchHtml(html);
-
-      const filteredLive = parsed.filter((course) => {
-        const codeMatch = course.courseCode.toLowerCase().includes(qLower);
-        const nameMatch = course.courseName.toLowerCase().includes(qLower);
-        const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
-        const deptMatchParam = deptLower
-          ? course.department?.toLowerCase().includes(deptLower)
-          : true;
-        return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
+    let results: CourseSummary[];
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
+        redirect: 'follow',
       });
 
-      if (filteredLive.length > 0) {
-        globalCache.set(cacheKey, filteredLive, 3600); // Cache for 1 hour
-        return filteredLive;
-      }
+      if (response.ok) {
+        const html = await response.text();
+        const parsed = parseCourseSearchHtml(html);
 
-      if (html.includes('לא נמצאו') || html.includes('אין תוצאות') || html.includes('לא קיים')) {
-        globalCache.set(cacheKey, [], 3600);
-        return [];
-      }
-
-      if (allowFallback) {
-        const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-        const filteredFallback = fallbackResults.filter((course) => {
+        const filteredLive = parsed.filter((course) => {
           const codeMatch = course.courseCode.toLowerCase().includes(qLower);
           const nameMatch = course.courseName.toLowerCase().includes(qLower);
           const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
@@ -628,38 +616,79 @@ export async function searchCourses(
           return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
         });
 
-        if (filteredFallback.length > 0) {
-          globalCache.set(cacheKey, filteredFallback, 3600);
-          return filteredFallback;
+        if (filteredLive.length > 0) {
+          if (allowFallback) {
+            globalCache.set(cacheKey, filteredLive, 3600); // Cache for 1 hour
+          }
+          return filteredLive;
         }
+
+        if (html.includes('לא נמצאו') || html.includes('אין תוצאות') || html.includes('לא קיים')) {
+          if (allowFallback) {
+            globalCache.set(cacheKey, [], 3600);
+          }
+          return [];
+        }
+
+        if (allowFallback) {
+          const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
+          const filteredFallback = fallbackResults.filter((course) => {
+            const codeMatch = course.courseCode.toLowerCase().includes(qLower);
+            const nameMatch = course.courseName.toLowerCase().includes(qLower);
+            const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
+            const deptMatchParam = deptLower
+              ? course.department?.toLowerCase().includes(deptLower)
+              : true;
+            return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
+          });
+
+          if (filteredFallback.length > 0) {
+            globalCache.set(cacheKey, filteredFallback, 3600);
+            return filteredFallback;
+          }
+        }
+
+        if (allowFallback) {
+          globalCache.set(cacheKey, [], 3600);
+        }
+        return [];
+      } else if (!allowFallback) {
+        throw new Error(`Failed to search courses: HTTP ${response.status} ${response.statusText}`);
       }
-
-      globalCache.set(cacheKey, [], 3600);
-      return [];
-    } else if (!allowFallback) {
-      throw new Error(`Failed to search courses: HTTP ${response.status} ${response.statusText}`);
+    } catch (err: any) {
+      if (!allowFallback) {
+        throw err;
+      }
     }
-  } catch (err: any) {
-    if (!allowFallback) {
-      throw err;
-    }
-  }
 
-  // Fallback mode: parse fallback search HTML and filter by query/department
-  const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-  results = fallbackResults.filter((course) => {
-    const codeMatch = course.courseCode.toLowerCase().includes(qLower);
-    const nameMatch = course.courseName.toLowerCase().includes(qLower);
-    const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
-    const deptMatchParam = deptLower
-      ? course.department?.toLowerCase().includes(deptLower)
-      : true;
-    return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
+    // Fallback mode: parse fallback search HTML and filter by query/department
+    const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
+    results = fallbackResults.filter((course) => {
+      const codeMatch = course.courseCode.toLowerCase().includes(qLower);
+      const nameMatch = course.courseName.toLowerCase().includes(qLower);
+      const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
+      const deptMatchParam = deptLower
+        ? course.department?.toLowerCase().includes(deptLower)
+        : true;
+      return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
+    });
+
+    if (allowFallback) {
+      globalCache.set(cacheKey, results, 3600); // Cache for 1 hour
+    }
+    return results;
+  })().finally(() => {
+    inFlightSearch.delete(cacheKey);
   });
 
-  globalCache.set(cacheKey, results, 3600); // Cache for 1 hour
-  return results;
+  if (allowFallback) {
+    inFlightSearch.set(cacheKey, promise);
+  }
+
+  return promise;
 }
+
+const inFlightSchedule = new Map<string, Promise<CourseScheduleDetail>>();
 
 /**
  * Live course schedule details fetcher with static HTML fallback & 1h caching
@@ -669,72 +698,96 @@ export async function getCourseSchedule(
   allowFallback: boolean = true
 ): Promise<CourseScheduleDetail> {
   const cacheKey = `course_schedule:${courseCode.trim()}`;
-  const cached = globalCache.get<CourseScheduleDetail>(cacheKey);
-  if (cached) {
-    return cached;
+
+  if (allowFallback) {
+    const cached = globalCache.get<CourseScheduleDetail>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const existing = inFlightSchedule.get(cacheKey);
+    if (existing) {
+      return existing;
+    }
   }
 
-  const url = buildFireflyUrl('S_LOOK_FOR_NOSE', {
-    arguments: `-N${courseCode}`,
-  });
-
-  let detail: CourseScheduleDetail;
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
-      redirect: 'follow',
+  const promise = (async () => {
+    const url = buildFireflyUrl('S_LOOK_FOR_NOSE', {
+      arguments: `-N${courseCode}`,
     });
 
-    if (response.ok) {
-      const html = await response.text();
-      try {
-        const liveDetail = parseCourseScheduleHtml(html, courseCode);
-        if (liveDetail && liveDetail.groups && liveDetail.groups.length > 0) {
-          globalCache.set(cacheKey, liveDetail, 3600); // Cache for 1 hour
-          return liveDetail;
+    let detail: CourseScheduleDetail;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
+        redirect: 'follow',
+      });
+
+      if (response.ok) {
+        const html = await response.text();
+        try {
+          const liveDetail = parseCourseScheduleHtml(html, courseCode);
+          if (liveDetail && liveDetail.groups && liveDetail.groups.length > 0) {
+            if (allowFallback) {
+              globalCache.set(cacheKey, liveDetail, 3600); // Cache for 1 hour
+            }
+            return liveDetail;
+          }
+        } catch (parseErr: any) {
+          if (!allowFallback || parseErr.message?.includes('was not found')) {
+            throw parseErr;
+          }
         }
-      } catch (parseErr: any) {
-        if (!allowFallback || parseErr.message?.includes('was not found')) {
-          throw parseErr;
-        }
+      } else if (!allowFallback) {
+        throw new Error(`Failed to fetch course schedule: HTTP ${response.status} ${response.statusText}`);
       }
-    } else if (!allowFallback) {
-      throw new Error(`Failed to fetch course schedule: HTTP ${response.status} ${response.statusText}`);
+    } catch (err: any) {
+      if (err?.message?.includes('was not found or is not taught')) {
+        throw err;
+      }
+      if (!allowFallback) {
+        throw err;
+      }
     }
-  } catch (err: any) {
-    if (err?.message?.includes('was not found or is not taught')) {
-      throw err;
+
+    // Fallback mode: check if course is present in static fallback data
+    const fallbackCourses = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
+    const knownCourse = fallbackCourses.find((c) => c.courseCode === courseCode);
+
+    if (!knownCourse) {
+      throw new Error(`Course code '${courseCode}' was not found or is not taught this semester.`);
     }
-    if (!allowFallback) {
-      throw err;
+
+    // Fallback to static course HTML for 61767 or adapt detail for other known fallback courses
+    if (courseCode === '61767') {
+      detail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, courseCode);
+      if (allowFallback) {
+        globalCache.set(cacheKey, detail, 3600); // Cache for 1 hour
+      }
+      return detail;
     }
-  }
 
-  // Fallback mode: check if course is present in static fallback data
-  const fallbackCourses = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-  const knownCourse = fallbackCourses.find((c) => c.courseCode === courseCode);
-
-  if (!knownCourse) {
-    throw new Error(`Course code '${courseCode}' was not found or is not taught this semester.`);
-  }
-
-  // Fallback to static course HTML for 61767 or adapt detail for other known fallback courses
-  if (courseCode === '61767') {
-    detail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, courseCode);
-    globalCache.set(cacheKey, detail, 3600); // Cache for 1 hour
+    const baseDetail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, '61767');
+    detail = {
+      ...baseDetail,
+      courseCode: knownCourse.courseCode,
+      courseName: knownCourse.courseName,
+    };
+    if (allowFallback) {
+      globalCache.set(cacheKey, detail, 3600); // Cache for 1 hour
+    }
     return detail;
+  })().finally(() => {
+    inFlightSchedule.delete(cacheKey);
+  });
+
+  if (allowFallback) {
+    inFlightSchedule.set(cacheKey, promise);
   }
 
-  const baseDetail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, '61767');
-  detail = {
-    ...baseDetail,
-    courseCode: knownCourse.courseCode,
-    courseName: knownCourse.courseName,
-  };
-  globalCache.set(cacheKey, detail, 3600); // Cache for 1 hour
-  return detail;
+  return promise;
 }

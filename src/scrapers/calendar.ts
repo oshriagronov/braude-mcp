@@ -296,47 +296,86 @@ export function parseCalendarHtml(
   };
 }
 
+const inFlightCalendar = new Map<string, Promise<AcademicCalendarData>>();
+
 /**
- * Fetches and parses the academic calendar live from Ort Braude College with 24h caching
+ * Normalizes and filters calendar data by year filter
+ */
+function filterCalendarData(data: AcademicCalendarData, yearFilter?: string): AcademicCalendarData {
+  if (!yearFilter || yearFilter.trim().length === 0) {
+    return data;
+  }
+  return {
+    ...data,
+    years: data.years.filter((y) => matchesYearFilter(y.academicYear, yearFilter)),
+  };
+}
+
+/**
+ * Fetches and parses the academic calendar live from Ort Braude College with 24h caching and in-flight deduplication
  */
 export async function fetchAcademicCalendar(
   yearFilter?: string,
   allowFallback: boolean = true
 ): Promise<AcademicCalendarData> {
-  const cacheKey = `calendar:${yearFilter || 'all'}`;
-  const cached = globalCache.get<AcademicCalendarData>(cacheKey);
-  if (cached) {
-    return cached;
+  const cacheKey = 'calendar:full';
+
+  if (allowFallback) {
+    const cached = globalCache.get<AcademicCalendarData>(cacheKey);
+    if (cached) {
+      return filterCalendarData(cached, yearFilter);
+    }
+
+    const existing = inFlightCalendar.get(cacheKey);
+    if (existing) {
+      const data = await existing;
+      return filterCalendarData(data, yearFilter);
+    }
   }
 
-  let data: AcademicCalendarData;
-  try {
-    const response = await fetch(CALENDAR_URL, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
-      redirect: 'follow',
-    });
+  const promise = (async () => {
+    let data: AcademicCalendarData;
+    try {
+      const response = await fetch(CALENDAR_URL, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
+        redirect: 'follow',
+      });
 
-    if (response.ok) {
-      const html = await response.text();
-      data = parseCalendarHtml(html, CALENDAR_URL, yearFilter);
+      if (response.ok) {
+        const html = await response.text();
+        data = parseCalendarHtml(html, CALENDAR_URL);
+        if (allowFallback) {
+          globalCache.set(cacheKey, data, 86400); // Cache for 24 hours
+        }
+        return data;
+      } else if (!allowFallback) {
+        throw new Error(
+          `Failed to fetch academic calendar: HTTP ${response.status} ${response.statusText}`
+        );
+      }
+    } catch (err: any) {
+      if (!allowFallback) {
+        throw err;
+      }
+    }
+
+    data = parseCalendarHtml(FALLBACK_CALENDAR_HTML, CALENDAR_URL);
+    if (allowFallback) {
       globalCache.set(cacheKey, data, 86400); // Cache for 24 hours
-      return data;
-    } else if (!allowFallback) {
-      throw new Error(
-        `Failed to fetch academic calendar: HTTP ${response.status} ${response.statusText}`
-      );
     }
-  } catch (err: any) {
-    if (!allowFallback) {
-      throw err;
-    }
+    return data;
+  })().finally(() => {
+    inFlightCalendar.delete(cacheKey);
+  });
+
+  if (allowFallback) {
+    inFlightCalendar.set(cacheKey, promise);
   }
 
-  data = parseCalendarHtml(FALLBACK_CALENDAR_HTML, CALENDAR_URL, yearFilter);
-  globalCache.set(cacheKey, data, 86400); // Cache for 24 hours
-  return data;
+  const fullData = await promise;
+  return filterCalendarData(fullData, yearFilter);
 }
