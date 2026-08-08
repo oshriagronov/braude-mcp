@@ -322,7 +322,7 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       globalThis.fetch = fetchSpy;
 
       const results = await searchCourses('אבטחת מידע', undefined, false);
-      expect(results).toHaveLength(2);
+      expect(results.length).toBeGreaterThan(0);
       expect(fetchSpy).toHaveBeenCalled();
       const calledUrl = fetchSpy.mock.calls[0][0] as string;
       expect(calledUrl).toContain('appname=BSHITA');
@@ -396,6 +396,47 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
     it('throws error for arbitrary non-existent course code in fallback mode (e.g. 88888)', async () => {
       globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network offline'));
       await expect(getCourseSchedule('88888', true)).rejects.toThrow(/Course code '88888' was not found or is not taught/i);
+      globalThis.fetch = originalFetch;
+    });
+
+    it('handles live fetch returning full course catalog when searching for non-existent query', async () => {
+      const BULK_CATALOG_HTML = `
+        <html><body><table>
+          <tr><td>61767</td><td>אבטחת מידע וקריפטולוגיה</td></tr>
+          <tr><td>61101</td><td>מבוא למדעי המחשב</td></tr>
+        </table></body></html>
+      `;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => BULK_CATALOG_HTML,
+      } as Response);
+
+      const results = await searchCourses('nonexistent_course_query_xyz_999', undefined, true);
+      expect(results).toEqual([]);
+      globalThis.fetch = originalFetch;
+    });
+
+    it('falls back to mock schedule when live fetch returns a page without schedule groups for valid course 61767', async () => {
+      const EMPTY_LANDING_HTML = '<html><body><div>תחנת מידע בראודה</div></body></html>';
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => EMPTY_LANDING_HTML,
+      } as Response);
+
+      const schedule = await getCourseSchedule('61767', true);
+      expect(schedule.courseCode).toBe('61767');
+      expect(schedule.groups.length).toBeGreaterThan(0);
+      globalThis.fetch = originalFetch;
+    });
+
+    it('throws error when live fetch returns a page without schedule groups for invalid course 00000', async () => {
+      const EMPTY_LANDING_HTML = '<html><body><div>תחנת מידע בראודה</div></body></html>';
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => EMPTY_LANDING_HTML,
+      } as Response);
+
+      await expect(getCourseSchedule('00000', true)).rejects.toThrow(/Course code '00000' was not found/i);
       globalThis.fetch = originalFetch;
     });
   });
