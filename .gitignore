@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build & Output
+dist/
+*.tsbuildinfo
+
+# Cloudflare Wrangler & Dev
+.wrangler/
+.dev.vars
+
+# Environment & Config
+.env
+.env.*
+!.env.example
+
+# Testing & Coverage
+coverage/
+*.log
+
+# Editor & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Agent scratch directory
+.agents/
+
