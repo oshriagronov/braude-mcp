@@ -5,7 +5,7 @@
 [![Cloudflare Workers](https://img.shields.io/badge/Platform-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-JSON--RPC%202.0-blue)](https://modelcontextprotocol.io/)
 
-A remote, serverless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Ort Braude College of Engineering** (מכללת עזריאלי / אורט בראודה). Built with TypeScript, Hono, and deployed on Cloudflare Workers.
+A remote, serverless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Ort Braude College of Engineering**. Built with TypeScript, Hono, and deployed on Cloudflare Workers.
 
 This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to query real-time academic calendar dates, search for available courses, and look up course schedules and classroom assignments.
 
