@@ -746,17 +746,12 @@ export async function searchCourses(
             globalCache.set(CATALOG_CACHE_KEY, parsed, 7200); // 2 hours
           }
           const filtered = filterCourses(parsed, qTrimmed, department);
-          if (allowFallback) {
-            globalCache.set(cacheKey, filtered, 3600);
+          if (filtered.length > 0) {
+            if (allowFallback) {
+              globalCache.set(cacheKey, filtered, 3600);
+            }
+            return filtered;
           }
-          return filtered;
-        }
-
-        if (html.includes('לא נמצאו') || html.includes('אין תוצאות') || html.includes('לא קיים')) {
-          if (allowFallback) {
-            globalCache.set(cacheKey, [], 3600);
-          }
-          return [];
         }
       } else if (!allowFallback) {
         throw new Error(`Failed to search courses: HTTP ${response.status} ${response.statusText}`);
@@ -767,25 +762,34 @@ export async function searchCourses(
       }
     }
 
-    // Last-Known-Good fallback: use stale cached live data
+    // 1. Primary Fallback: Stale cached live data (Last-Known-Good)
     const staleCatalog = globalCache.getStale<CourseSummary[]>(CATALOG_CACHE_KEY);
     if (staleCatalog && staleCatalog.length > 0) {
       const filteredStale = filterCourses(staleCatalog, qTrimmed, department);
-      return filteredStale;
+      if (filteredStale.length > 0) {
+        return filteredStale;
+      }
     }
 
     const staleQueryResults = globalCache.getStale<CourseSummary[]>(cacheKey);
-    if (staleQueryResults) {
+    if (staleQueryResults && staleQueryResults.length > 0) {
       return staleQueryResults;
     }
 
-    // Cold-start fallback for tests and offline environments
-    const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-    const filteredFallback = filterCourses(fallbackResults, qTrimmed, department);
+    // 2. Secondary Fallback: Static test mock for offline environments / CI
     if (allowFallback) {
-      globalCache.set(cacheKey, filteredFallback, 3600);
+      const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
+      const filteredFallback = filterCourses(fallbackResults, qTrimmed, department);
+      if (filteredFallback.length > 0) {
+        globalCache.set(cacheKey, filteredFallback, 3600);
+        return filteredFallback;
+      }
+
+      globalCache.set(cacheKey, [], 3600);
+      return [];
     }
-    return filteredFallback;
+
+    return [];
   })().finally(() => {
     inFlightSearch.delete(cacheKey);
   });
@@ -826,7 +830,7 @@ export async function getCourseSchedule(
       arguments: `-N${cleanCode}`,
     });
 
-    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 10000;
+    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 4000;
 
     let detail: CourseScheduleDetail;
     try {
@@ -853,9 +857,6 @@ export async function getCourseSchedule(
           if (!allowFallback) {
             throw parseErr;
           }
-          if (parseErr.message && parseErr.message.includes('was not found')) {
-            throw parseErr;
-          }
         }
       } else if (!allowFallback) {
         throw new Error(`Failed to fetch course schedule: HTTP ${response.status} ${response.statusText}`);
@@ -864,18 +865,15 @@ export async function getCourseSchedule(
       if (!allowFallback) {
         throw err;
       }
-      if (err.message && err.message.includes('was not found')) {
-        throw err;
-      }
     }
 
-    // Last-Known-Good fallback: use stale cached live schedule
+    // 1. Primary Fallback: Stale cached live schedule (Last-Known-Good)
     const staleCached = globalCache.getStale<CourseScheduleDetail>(cacheKey);
     if (staleCached) {
       return staleCached;
     }
 
-    // Cold-start fallback for tests and offline environments
+    // 2. Secondary Fallback: Static test mock for offline environments / CI
     const fallbackCourses = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
     const knownCourse = fallbackCourses.find((c) => c.courseCode === cleanCode);
 
@@ -912,3 +910,4 @@ export async function getCourseSchedule(
 
   return promise;
 }
+

@@ -341,7 +341,7 @@ export async function fetchAcademicCalendar(
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
-        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 10000),
+        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 4000),
         redirect: 'follow',
       });
 

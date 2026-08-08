@@ -114,9 +114,14 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
 2. **Robots.txt & Public Access Only**:
    - Scrapers MUST only access public URLs on `w3.braude.ac.il` and `info.braude.ac.il`.
    - Never attempt to bypass logins, scrape authenticated student portals, or access private data.
-3. **Rate Limiting & Caching**:
+3. **Rate Limiting, Caching & Fallback Hierarchy**:
    - Maintain the sliding window IP rate limiter in [src/middleware/rate_limit.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/middleware/rate_limit.ts).
-   - Use in-memory TTL caching in [src/utils/cache.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/utils/cache.ts) for HTML scraping to prevent overloading college servers.
+   - **Stale-While-Revalidate Caching**: In [src/utils/cache.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/utils/cache.ts), cached entries retain their data even after expiration (`getStale()`). A cache entry is **only overwritten upon a successful live scrape**.
+   - **Multi-Tier Fallback Hierarchy**:
+     1. **Fresh Cache**: If valid unexpired data exists in `MemoryCache`, serve immediately (0ms).
+     2. **Live Scrape**: Attempt live fetch from the college portal with appropriate timeout (default 4s, configurable via `FETCH_TIMEOUT_MS`).
+     3. **Stale Cache (Last-Known-Good)**: If live fetch fails, times out, or returns a temporary portal error, serve the stale cached data (`getStale()`) to guarantee continuity of accurate live information.
+     4. **Test Mocks (Cold-Start / CI Safety)**: Static fallback HTML fixtures are strictly reserved for test harnesses and cold-start offline CI environments (e.g., GitHub Actions runners) so CI pipelines remain deterministic without failing on college portal downtime.
 4. **JSON-RPC 2.0 / MCP Compliance**:
    - All `/mcp` POST responses must return valid JSON-RPC 2.0 objects with proper `id`, `result`, or `error` structures.
    - Tool execution results must use `{ content: [{ type: "text", text: JSON.stringify(...) }], isError?: boolean }`.
