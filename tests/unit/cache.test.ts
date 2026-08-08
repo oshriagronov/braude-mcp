@@ -33,12 +33,20 @@ describe('MemoryCache Unit Tests', () => {
 
     expect(cache.get('expiring_key')).toBeUndefined();
     expect(cache.has('expiring_key')).toBe(false);
+    expect(cache.isExpired('expiring_key')).toBe(true);
+    expect(cache.getStale('expiring_key')).toBe('val');
+  });
+
+  it('should return undefined for getStale when key does not exist', () => {
+    expect(cache.getStale('unknown_key')).toBeUndefined();
+    expect(cache.isExpired('unknown_key')).toBe(true);
   });
 
   it('should delete keys explicitly', () => {
     cache.set('to_delete', 'value', 60);
     expect(cache.delete('to_delete')).toBe(true);
     expect(cache.get('to_delete')).toBeUndefined();
+    expect(cache.getStale('to_delete')).toBeUndefined();
   });
 
   it('should clear all entries', () => {
@@ -49,5 +57,7 @@ describe('MemoryCache Unit Tests', () => {
     cache.clear();
     expect(cache.size).toBe(0);
     expect(cache.get('k1')).toBeUndefined();
+    expect(cache.getStale('k1')).toBeUndefined();
   });
 });
+

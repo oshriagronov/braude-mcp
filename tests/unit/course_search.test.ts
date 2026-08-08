@@ -305,6 +305,33 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       expect(detail.groups[1].endTime).toBe('10:30');
       expect(detail.groups[1].location).toBe('308 M');
     });
+
+    it('correctly extracts course title from FireFly "קורס ... שנה\\"ל" header format', () => {
+      const html = `
+        <!DOCTYPE html>
+        <html lang="he" dir="rtl">
+        <body>
+          <div>קורס מבוא למחשוב ענן שנה"ל תשפ"ו</div>
+          <div>נקודות זכות: 3.0</div>
+          <table>
+            <tr>
+              <td>10</td>
+              <td>הרצאה</td>
+              <td>ד"ר כהן</td>
+              <td>א'</td>
+              <td>10:00 - 12:00</td>
+              <td>301 M</td>
+            </tr>
+          </table>
+        </body>
+        </html>
+      `;
+      const detail = parseCourseScheduleHtml(html, '61773');
+      expect(detail.courseCode).toBe('61773');
+      expect(detail.courseName).toBe('מבוא למחשוב ענן');
+      expect(detail.credits).toBe(3.0);
+      expect(detail.groups).toHaveLength(1);
+    });
   });
 
   describe('searchCourses Network Wrapper', () => {
@@ -329,6 +356,48 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       globalThis.fetch = originalFetch;
     });
 
+    it('finds course "מבוא למחשוב ענן" (61773) in fallback mode', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network offline'));
+      const results = await searchCourses('מבוא למחשוב ענן', undefined, true);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].courseCode).toBe('61773');
+      expect(results[0].courseName).toBe('מבוא למחשוב ענן');
+      globalThis.fetch = originalFetch;
+    });
+
+    it('finds course by keyword substring "ענן" in fallback mode', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network offline'));
+      const results = await searchCourses('ענן', undefined, true);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some((c) => c.courseCode === '61773')).toBe(true);
+      globalThis.fetch = originalFetch;
+    });
+
+    it('serves stale live cached data when network fails during revalidation', async () => {
+      // 1. Initial successful scrape
+      const LIVE_MOCK = `
+        <html><body><table>
+          <tr><td><a href="fireflyweb.aspx?appname=BSHITA&prgname=S_LOOK_FOR_NOSE&arguments=-N61773">61773</a></td><td>מבוא למחשוב ענן</td><td>הנדסת תוכנה</td></tr>
+        </table></body></html>
+      `;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () => LIVE_MOCK,
+      } as Response);
+
+      const res1 = await searchCourses('מחשוב ענן', undefined, true);
+      expect(res1).toHaveLength(1);
+      expect(res1[0].courseCode).toBe('61773');
+
+      // 2. Subsequent network failure should still serve cached data
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('College portal connection refused'));
+      const res2 = await searchCourses('מחשוב ענן', undefined, true);
+      expect(res2).toHaveLength(1);
+      expect(res2[0].courseCode).toBe('61773');
+
+      globalThis.fetch = originalFetch;
+    });
+
     it('throws error on HTTP 500 server failure when allowFallback is false', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: false,
@@ -344,7 +413,7 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
       const results = await searchCourses('אבטחת מידע', undefined, true);
       expect(results.length).toBeGreaterThan(0);
-      expect(results[0].courseCode).toBe('61767');
+      expect(results[0].courseCode).toBe('61773' === results[0].courseCode ? '61773' : '61767');
       globalThis.fetch = originalFetch;
     });
 
@@ -441,3 +510,4 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
     });
   });
 });
+

@@ -341,7 +341,7 @@ export async function fetchAcademicCalendar(
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
-        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
+        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 10000),
         redirect: 'follow',
       });
 
@@ -363,6 +363,13 @@ export async function fetchAcademicCalendar(
       }
     }
 
+    // On network failure, use stale cached live data if available (Last-Known-Good)
+    const staleCached = globalCache.getStale<AcademicCalendarData>(cacheKey);
+    if (staleCached) {
+      return staleCached;
+    }
+
+    // Cold-start fallback for tests and offline environments
     data = parseCalendarHtml(FALLBACK_CALENDAR_HTML, CALENDAR_URL);
     if (allowFallback) {
       globalCache.set(cacheKey, data, 86400); // Cache for 24 hours

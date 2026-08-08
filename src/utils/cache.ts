@@ -16,11 +16,32 @@ export class MemoryCache {
     }
 
     if (Date.now() > entry.expiresAt) {
-      this.store.delete(key);
       return undefined;
     }
 
     return entry.value as T;
+  }
+
+  /**
+   * Retrieves a value from the cache even if it has expired (Last-Known-Good state for fallback).
+   */
+  getStale<T>(key: string): T | undefined {
+    const entry = this.store.get(key);
+    if (!entry) {
+      return undefined;
+    }
+    return entry.value as T;
+  }
+
+  /**
+   * Checks if an entry exists and is expired.
+   */
+  isExpired(key: string): boolean {
+    const entry = this.store.get(key);
+    if (!entry) {
+      return true;
+    }
+    return Date.now() > entry.expiresAt;
   }
 
   /**
@@ -58,11 +79,9 @@ export class MemoryCache {
   get size(): number {
     const now = Date.now();
     let count = 0;
-    for (const [key, entry] of this.store.entries()) {
+    for (const entry of this.store.values()) {
       if (now <= entry.expiresAt) {
         count++;
-      } else {
-        this.store.delete(key);
       }
     }
     return count;
@@ -71,3 +90,4 @@ export class MemoryCache {
 
 // Global singleton cache instance for application-wide reuse
 export const globalCache = new MemoryCache();
+

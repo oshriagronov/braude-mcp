@@ -8,6 +8,7 @@ import type {
 import { globalCache } from '../utils/cache.js';
 
 export const FIREFLY_BASE_URL = 'https://info.braude.ac.il/yedion/fireflyweb.aspx';
+export const CATALOG_CACHE_KEY = 'course_catalog:all';
 
 export const FALLBACK_COURSES_SEARCH_HTML = `
 <!DOCTYPE html>
@@ -45,6 +46,12 @@ export const FALLBACK_COURSES_SEARCH_HTML = `
       <tr>
         <td><a href="fireflyweb.aspx?appname=BSHITA&prgname=S_LOOK_FOR_NOSE&arguments=-N61307">61307</a></td>
         <td>אלגוריתמים</td>
+        <td>הנדסת תוכנה</td>
+        <td>3.0</td>
+      </tr>
+      <tr>
+        <td><a href="fireflyweb.aspx?appname=BSHITA&prgname=S_LOOK_FOR_NOSE&arguments=-N61773">61773</a></td>
+        <td>מבוא למחשוב ענן</td>
         <td>הנדסת תוכנה</td>
         <td>3.0</td>
       </tr>
@@ -131,6 +138,40 @@ export function classifyGroupType(text: string): GroupType {
 }
 
 /**
+ * Filters a list of CourseSummary objects against a search query and optional department
+ */
+export function filterCourses(
+  courses: CourseSummary[],
+  query: string,
+  department?: string
+): CourseSummary[] {
+  const qClean = query.trim().toLowerCase();
+  const qWords = qClean.split(/\s+/).filter((w) => w.length > 0);
+  const deptClean = department ? department.trim().toLowerCase() : undefined;
+
+  return courses.filter((course) => {
+    const cCode = course.courseCode.toLowerCase();
+    const cName = course.courseName.toLowerCase();
+    const cDept = course.department ? course.department.toLowerCase() : '';
+
+    const codeMatch = cCode.includes(qClean);
+    const nameMatch = cName.includes(qClean);
+    const deptMatch = cDept.includes(qClean);
+
+    // Multi-word token match (e.g. "מבוא מחשוב ענן")
+    const allWordsMatch =
+      qWords.length > 1 &&
+      qWords.every((word) => cName.includes(word) || cCode.includes(word) || cDept.includes(word));
+
+    const matchesQuery = codeMatch || nameMatch || deptMatch || allWordsMatch;
+
+    const matchesDept = deptClean ? cDept.includes(deptClean) : true;
+
+    return matchesQuery && matchesDept;
+  });
+}
+
+/**
  * Pure HTML parser for course search results (supports both modern grid & legacy table layouts)
  */
 export function parseCourseSearchHtml(html: string): CourseSummary[] {
@@ -155,10 +196,10 @@ export function parseCourseSearchHtml(html: string): CourseSummary[] {
     const secondCellText = $(cells[1]).text().trim();
     const linkHref = $(cells).find('a[href*="S_LOOK_FOR_NOSE"]').attr('href') || '';
 
-    const codeMatch = firstCellText.match(/\d{5}/) || linkHref.match(/arguments=-N(\d{5})/);
+    const codeMatch = firstCellText.match(/\d{5,6}/) || linkHref.match(/arguments=-N(\d{5,6})/);
     if (codeMatch && secondCellText) {
       const courseCode = codeMatch[1] || codeMatch[0];
-      const courseName = secondCellText.replace(/^\d{5}\s*-\s*/, '').trim();
+      const courseName = secondCellText.replace(/^\d{5,6}\s*-\s*/, '').trim();
       const department = cells.length >= 3 ? $(cells[2]).text().trim() : undefined;
       const creditsText = cells.length >= 4 ? $(cells[3]).text().trim() : undefined;
       const credits = creditsText ? parseFloat(creditsText) : undefined;
@@ -233,10 +274,10 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
   const prerequisites: string[] = [];
 
   // Parse Title / Header
-  const titleText = $('h1, h2, h3, .HeaderTitle, .title, header').map((_, e) => $(e).text().trim()).get().join(' ');
+  const titleText = $('h1, h2, h3, .HeaderTitle, .title, header, .Title').map((_, e) => $(e).text().trim()).get().join(' ');
   const codeTitleMatch =
     titleText.match(new RegExp(`${requestedCode}\\s*-\\s*([^\\n\\r<]+)`)) ||
-    titleText.match(/(\d{5})\s*-\s*([^\n\r<]+)/);
+    titleText.match(/(\d{5,6})\s*-\s*([^\n\r<]+)/);
 
   if (codeTitleMatch && codeTitleMatch[2]) {
     const candidate = codeTitleMatch[2].replace(/נ"ז.*$/g, '').replace(/נקודות זכות.*$/g, '').trim();
@@ -250,8 +291,34 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
     }
   }
 
+  // Look for "קורס <name> שנה"ל" header format (Firefly live header)
   if (courseName === requestedCode) {
-    const pageMatch = pageText.match(new RegExp(`${requestedCode}\\s+([^\\d\\n\\r<]+?)(?:\\s+\\d+|\\s+נ"ז|\\s+שנה"ל|\\s+נקודות)`));
+    const matchCourseYear = pageText.match(/קורס\s+([^\d\n\r<]+?)\s+שנה"ל/);
+    if (matchCourseYear && matchCourseYear[1].trim()) {
+      const candidate = matchCourseYear[1].trim();
+      if (candidate && !candidate.includes('קבוצה') && !candidate.includes('מרצה')) {
+        courseName = candidate;
+      }
+    }
+  }
+
+  // Look for "פרשיית לימוד <code> <name>"
+  if (courseName === requestedCode) {
+    const matchPrashia = pageText.match(
+      new RegExp(`(?:פרשיית לימוד|סילבוס)\\s*(?:${requestedCode})?\\s*([^\\n\\r<]+?)(?:\\s+\\d+(?:\\.\\d+)?\\s*נ"ז|\\s+שנה"ל|\\s+סמסטר|\\s*$)`)
+    );
+    if (matchPrashia && matchPrashia[1].trim()) {
+      const candidate = matchPrashia[1].replace(new RegExp(`^${requestedCode}\\s*`), '').trim();
+      if (candidate && candidate.length > 2 && !candidate.includes('קבוצה')) {
+        courseName = candidate;
+      }
+    }
+  }
+
+  if (courseName === requestedCode) {
+    const pageMatch = pageText.match(
+      new RegExp(`${requestedCode}\\s+([^\\d\\n\\r<]+?)(?:\\s+\\d+|\\s+נ"ז|\\s+שנה"ל|\\s+נקודות)`)
+    );
     if (pageMatch && pageMatch[1]) {
       const candidate = pageMatch[1].trim();
       if (candidate && !candidate.includes('קבוצה') && !candidate.includes('מרצה')) {
@@ -263,7 +330,7 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
   // Fallback to title tag if body title is missing or plain code
   if (courseName === requestedCode) {
     const pageTitle = $('title').text().trim();
-    const match = pageTitle.match(/(\d{5})\s*-?\s*(.+)/);
+    const match = pageTitle.match(/(\d{5,6})\s*-?\s*(.+)/);
     if (match && match[2]) {
       const candidate = match[2].replace(/חופשי|חיפוש קורסים במערכת.*$/g, '').trim();
       if (candidate) courseName = candidate;
@@ -334,7 +401,6 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
   // Strategy A: Modern FireFly Bootstrap DIV Grid Layout
   const groupHeaders: { text: string; el: any }[] = [];
   $('.TextAlignRight, div:contains("קורס מסוג")').each((_, el) => {
-    // Exclude parent elements if a child element also matches
     if ($(el).find('.TextAlignRight, div:contains("קורס מסוג")').length > 0) return;
 
     const text = $(el).text().replace(/\s+/g, ' ').trim();
@@ -349,7 +415,6 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
       const headerText = headerObj.text;
       const headerEl = headerObj.el;
 
-      // Find the specific schedule table container for this group header
       let containerEl = headerEl.nextAll('.searchWrapper, .MasterTable, .Table, table, .card').first();
       if (containerEl.length === 0) {
         containerEl = headerEl.parent().find('.searchWrapper, .MasterTable, .Table, table, .card').first();
@@ -560,7 +625,7 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
 }
 
 /**
- * Live search wrapper with high-availability static HTML fallback & 1h caching
+ * Live search wrapper with resilient multi-tier querying and Stale-While-Revalidate caching
  */
 const inFlightSearch = new Map<string, Promise<CourseSummary[]>>();
 
@@ -569,14 +634,24 @@ export async function searchCourses(
   department?: string,
   allowFallback: boolean = true
 ): Promise<CourseSummary[]> {
-  const qLower = query.toLowerCase().trim();
-  const deptLower = department ? department.toLowerCase().trim() : undefined;
-  const cacheKey = `course_search:${qLower}:${(department || '').toLowerCase().trim()}`;
+  const qTrimmed = query.trim();
+  const qLower = qTrimmed.toLowerCase();
+  const deptLower = (department || '').toLowerCase().trim();
+  const cacheKey = `course_search:${qLower}:${deptLower}`;
 
+  // 1. Check fresh cache
   if (allowFallback) {
     const cached = globalCache.get<CourseSummary[]>(cacheKey);
     if (cached) {
       return cached;
+    }
+
+    // Check if full catalog is cached and fresh
+    const cachedCatalog = globalCache.get<CourseSummary[]>(CATALOG_CACHE_KEY);
+    if (cachedCatalog && cachedCatalog.length > 0) {
+      const results = filterCourses(cachedCatalog, qTrimmed, department);
+      globalCache.set(cacheKey, results, 3600);
+      return results;
     }
 
     const existing = inFlightSearch.get(cacheKey);
@@ -586,19 +661,79 @@ export async function searchCourses(
   }
 
   const promise = (async () => {
-    const url = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
-      R1C2: query,
-      ...(department ? { R1C8: department } : {}),
-    });
+    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 10000;
+    const isCodeQuery = /^\d{5,6}$/.test(qTrimmed);
 
-    let results: CourseSummary[];
+    // Fast-path 1: Numeric course code direct schedule lookup
+    if (isCodeQuery) {
+      try {
+        const scheduleDetail = await getCourseSchedule(qTrimmed, allowFallback);
+        if (scheduleDetail) {
+          const directSummary: CourseSummary = {
+            courseCode: scheduleDetail.courseCode,
+            courseName: scheduleDetail.courseName,
+            credits: scheduleDetail.credits,
+          };
+          const matches = filterCourses([directSummary], qTrimmed, department);
+          if (matches.length > 0) {
+            if (allowFallback) {
+              globalCache.set(cacheKey, matches, 3600);
+            }
+            return matches;
+          }
+        }
+      } catch {
+        // Continue to catalog search if direct lookup fails
+      }
+    }
+
+    // Fast-path 2: Hebrew/English first-letter query (S_LOOK_FOR_NOSE_AB&arguments=-N<letter>)
+    const firstChar = qTrimmed.charAt(0);
+    const isLetter = /^[א-תa-zA-Z]$/.test(firstChar);
+    if (isLetter) {
+      try {
+        const letterUrl = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
+          arguments: `-N${firstChar}`,
+        });
+        const resp = await fetch(letterUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+          signal: AbortSignal.timeout(timeoutMs),
+          redirect: 'follow',
+        });
+        if (resp.ok) {
+          const html = await resp.text();
+          const letterCourses = parseCourseSearchHtml(html);
+          if (letterCourses.length > 0) {
+            const matches = filterCourses(letterCourses, qTrimmed, department);
+            if (matches.length > 0) {
+              if (allowFallback) {
+                globalCache.set(cacheKey, matches, 3600);
+              }
+              return matches;
+            }
+          }
+        }
+      } catch {
+        // Continue to full catalog if letter query fails
+      }
+    }
+
+    // Full catalog query
     try {
-      const response = await fetch(url, {
+      const fullUrl = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
+        R1C2: query,
+        ...(department ? { R1C8: department } : {}),
+      });
+
+      const response = await fetch(fullUrl, {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
-        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
+        signal: AbortSignal.timeout(timeoutMs),
         redirect: 'follow',
       });
 
@@ -606,21 +741,15 @@ export async function searchCourses(
         const html = await response.text();
         const parsed = parseCourseSearchHtml(html);
 
-        const filteredLive = parsed.filter((course) => {
-          const codeMatch = course.courseCode.toLowerCase().includes(qLower);
-          const nameMatch = course.courseName.toLowerCase().includes(qLower);
-          const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
-          const deptMatchParam = deptLower
-            ? course.department?.toLowerCase().includes(deptLower)
-            : true;
-          return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
-        });
-
-        if (filteredLive.length > 0) {
+        if (parsed.length > 0) {
           if (allowFallback) {
-            globalCache.set(cacheKey, filteredLive, 3600); // Cache for 1 hour
+            globalCache.set(CATALOG_CACHE_KEY, parsed, 7200); // 2 hours
           }
-          return filteredLive;
+          const filtered = filterCourses(parsed, qTrimmed, department);
+          if (allowFallback) {
+            globalCache.set(cacheKey, filtered, 3600);
+          }
+          return filtered;
         }
 
         if (html.includes('לא נמצאו') || html.includes('אין תוצאות') || html.includes('לא קיים')) {
@@ -629,29 +758,6 @@ export async function searchCourses(
           }
           return [];
         }
-
-        if (allowFallback) {
-          const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-          const filteredFallback = fallbackResults.filter((course) => {
-            const codeMatch = course.courseCode.toLowerCase().includes(qLower);
-            const nameMatch = course.courseName.toLowerCase().includes(qLower);
-            const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
-            const deptMatchParam = deptLower
-              ? course.department?.toLowerCase().includes(deptLower)
-              : true;
-            return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
-          });
-
-          if (filteredFallback.length > 0) {
-            globalCache.set(cacheKey, filteredFallback, 3600);
-            return filteredFallback;
-          }
-        }
-
-        if (allowFallback) {
-          globalCache.set(cacheKey, [], 3600);
-        }
-        return [];
       } else if (!allowFallback) {
         throw new Error(`Failed to search courses: HTTP ${response.status} ${response.statusText}`);
       }
@@ -661,22 +767,25 @@ export async function searchCourses(
       }
     }
 
-    // Fallback mode: parse fallback search HTML and filter by query/department
-    const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-    results = fallbackResults.filter((course) => {
-      const codeMatch = course.courseCode.toLowerCase().includes(qLower);
-      const nameMatch = course.courseName.toLowerCase().includes(qLower);
-      const deptMatchFromCourse = course.department ? course.department.toLowerCase().includes(qLower) : false;
-      const deptMatchParam = deptLower
-        ? course.department?.toLowerCase().includes(deptLower)
-        : true;
-      return (codeMatch || nameMatch || deptMatchFromCourse) && deptMatchParam;
-    });
-
-    if (allowFallback) {
-      globalCache.set(cacheKey, results, 3600); // Cache for 1 hour
+    // Last-Known-Good fallback: use stale cached live data
+    const staleCatalog = globalCache.getStale<CourseSummary[]>(CATALOG_CACHE_KEY);
+    if (staleCatalog && staleCatalog.length > 0) {
+      const filteredStale = filterCourses(staleCatalog, qTrimmed, department);
+      return filteredStale;
     }
-    return results;
+
+    const staleQueryResults = globalCache.getStale<CourseSummary[]>(cacheKey);
+    if (staleQueryResults) {
+      return staleQueryResults;
+    }
+
+    // Cold-start fallback for tests and offline environments
+    const fallbackResults = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
+    const filteredFallback = filterCourses(fallbackResults, qTrimmed, department);
+    if (allowFallback) {
+      globalCache.set(cacheKey, filteredFallback, 3600);
+    }
+    return filteredFallback;
   })().finally(() => {
     inFlightSearch.delete(cacheKey);
   });
@@ -691,13 +800,14 @@ export async function searchCourses(
 const inFlightSchedule = new Map<string, Promise<CourseScheduleDetail>>();
 
 /**
- * Live course schedule details fetcher with static HTML fallback & 1h caching
+ * Live course schedule details fetcher with Stale-While-Revalidate caching and static test fallback
  */
 export async function getCourseSchedule(
   courseCode: string,
   allowFallback: boolean = true
 ): Promise<CourseScheduleDetail> {
-  const cacheKey = `course_schedule:${courseCode.trim()}`;
+  const cleanCode = courseCode.trim();
+  const cacheKey = `course_schedule:${cleanCode}`;
 
   if (allowFallback) {
     const cached = globalCache.get<CourseScheduleDetail>(cacheKey);
@@ -713,8 +823,10 @@ export async function getCourseSchedule(
 
   const promise = (async () => {
     const url = buildFireflyUrl('S_LOOK_FOR_NOSE', {
-      arguments: `-N${courseCode}`,
+      arguments: `-N${cleanCode}`,
     });
+
+    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 10000;
 
     let detail: CourseScheduleDetail;
     try {
@@ -723,14 +835,14 @@ export async function getCourseSchedule(
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
-        signal: AbortSignal.timeout(Number(process.env.FETCH_TIMEOUT_MS) || 2000),
+        signal: AbortSignal.timeout(timeoutMs),
         redirect: 'follow',
       });
 
       if (response.ok) {
         const html = await response.text();
         try {
-          const liveDetail = parseCourseScheduleHtml(html, courseCode);
+          const liveDetail = parseCourseScheduleHtml(html, cleanCode);
           if (liveDetail && liveDetail.groups && liveDetail.groups.length > 0) {
             if (allowFallback) {
               globalCache.set(cacheKey, liveDetail, 3600); // Cache for 1 hour
@@ -741,6 +853,9 @@ export async function getCourseSchedule(
           if (!allowFallback) {
             throw parseErr;
           }
+          if (parseErr.message && parseErr.message.includes('was not found')) {
+            throw parseErr;
+          }
         }
       } else if (!allowFallback) {
         throw new Error(`Failed to fetch course schedule: HTTP ${response.status} ${response.statusText}`);
@@ -749,21 +864,29 @@ export async function getCourseSchedule(
       if (!allowFallback) {
         throw err;
       }
+      if (err.message && err.message.includes('was not found')) {
+        throw err;
+      }
     }
 
-    // Fallback mode: check if course is present in static fallback data
+    // Last-Known-Good fallback: use stale cached live schedule
+    const staleCached = globalCache.getStale<CourseScheduleDetail>(cacheKey);
+    if (staleCached) {
+      return staleCached;
+    }
+
+    // Cold-start fallback for tests and offline environments
     const fallbackCourses = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-    const knownCourse = fallbackCourses.find((c) => c.courseCode === courseCode);
+    const knownCourse = fallbackCourses.find((c) => c.courseCode === cleanCode);
 
     if (!knownCourse) {
-      throw new Error(`Course code '${courseCode}' was not found or is not taught this semester.`);
+      throw new Error(`Course code '${cleanCode}' was not found or is not taught this semester.`);
     }
 
-    // Fallback to static course HTML for 61767 or adapt detail for other known fallback courses
-    if (courseCode === '61767') {
-      detail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, courseCode);
+    if (cleanCode === '61767') {
+      detail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, cleanCode);
       if (allowFallback) {
-        globalCache.set(cacheKey, detail, 3600); // Cache for 1 hour
+        globalCache.set(cacheKey, detail, 3600);
       }
       return detail;
     }
@@ -773,9 +896,10 @@ export async function getCourseSchedule(
       ...baseDetail,
       courseCode: knownCourse.courseCode,
       courseName: knownCourse.courseName,
+      credits: knownCourse.credits || baseDetail.credits,
     };
     if (allowFallback) {
-      globalCache.set(cacheKey, detail, 3600); // Cache for 1 hour
+      globalCache.set(cacheKey, detail, 3600);
     }
     return detail;
   })().finally(() => {
