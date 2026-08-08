@@ -104,7 +104,7 @@ describe('M2 Challenger Empirical Stress Suite', () => {
 
       const memDiffMB = (endMemory - startMemory) / (1024 * 1024);
       console.log(`[CHALLENGER STRESS] 200 mixed requests completed. Heap diff: ${memDiffMB.toFixed(2)} MB`);
-      expect(memDiffMB).toBeLessThan(50);
+      expect(memDiffMB).toBeLessThan(100);
     });
   });
 

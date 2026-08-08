@@ -738,7 +738,7 @@ export async function getCourseSchedule(
             return liveDetail;
           }
         } catch (parseErr: any) {
-          if (!allowFallback || parseErr.message?.includes('was not found')) {
+          if (!allowFallback) {
             throw parseErr;
           }
         }
@@ -746,9 +746,6 @@ export async function getCourseSchedule(
         throw new Error(`Failed to fetch course schedule: HTTP ${response.status} ${response.statusText}`);
       }
     } catch (err: any) {
-      if (err?.message?.includes('was not found or is not taught')) {
-        throw err;
-      }
       if (!allowFallback) {
         throw err;
       }
