@@ -1,6 +1,6 @@
 # Braude College MCP Server (Cloudflare Worker)
 
-[![CI & CD](https://github.com/USER/braude-mcp/actions/workflows/deploy.yml/badge.svg)](https://github.com/USER/braude-mcp/actions/workflows/deploy.yml)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Cloudflare Workers](https://img.shields.io/badge/Platform-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-JSON--RPC%202.0-blue)](https://modelcontextprotocol.io/)
@@ -11,7 +11,6 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 
 ---
 
-> [!IMPORTANT]
 > ### ⚠️ Legal & Ethical Disclaimer
 > - **Unofficial Server**: This project is an **independent, open-source community tool** and is **NOT** affiliated with, authorized, maintained, sponsored, or endorsed by **Ort Braude College of Engineering**.
 > - **Robots.txt Compliance**: This server strictly respects and adheres to the `robots.txt` guidelines specified by `w3.braude.ac.il` and `info.braude.ac.il`. It only accesses publicly available pages.
@@ -97,24 +96,7 @@ In your IDE settings or MCP configuration file (`.cursor/mcp.json` or `.codeium/
 
 ### 3. Gemini Spark & Custom AI Agents
 
-Gemini Spark and custom HTTP clients can call the JSON-RPC 2.0 endpoint directly over HTTP POST:
-
-#### **JSON-RPC Request Example (`POST /mcp`)**
-```bash
-curl -X POST https://braude-mcp.<your-subdomain>.workers.dev/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "search_courses",
-      "arguments": {
-        "query": "אלגברה"
-      }
-    }
-  }'
-```
+for Gemini Spark go to "Connected Apps", scroll down to "Custome Apps" and click on "Add Custome App" and in there insert the url: `https://braude-mcp.<your-subdomain>.workers.dev/mcp` and procced with the instructions of gemini.
 
 ---
 
@@ -143,6 +125,31 @@ curl -X POST https://braude-mcp.<your-subdomain>.workers.dev/mcp \
    ```bash
    npm run deploy
    ```
+
+---
+
+### 📦 Uploading the Project to GitHub
+
+To publish this project to GitHub for the first time:
+
+1. **Initialize Git and commit code**:
+   ```bash
+   git init
+   git add .
+   git commit -m "feat: initial commit for braude-mcp server"
+   ```
+
+2. **Create repository and push to GitHub**:
+   - Using GitHub CLI (`gh`):
+     ```bash
+     gh repo create braude-mcp --public --source=. --remote=origin --push
+     ```
+   - Or manually create a repository on [GitHub](https://github.com/new) and run:
+     ```bash
+     git remote add origin https://github.com/YOUR_USERNAME/braude-mcp.git
+     git branch -M main
+     git push -u origin main
+     ```
 
 ---
 
