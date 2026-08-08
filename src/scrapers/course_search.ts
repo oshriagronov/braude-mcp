@@ -650,8 +650,10 @@ export async function searchCourses(
     const cachedCatalog = globalCache.get<CourseSummary[]>(CATALOG_CACHE_KEY);
     if (cachedCatalog && cachedCatalog.length > 0) {
       const results = filterCourses(cachedCatalog, qTrimmed, department);
-      globalCache.set(cacheKey, results, 3600);
-      return results;
+      if (results.length > 0) {
+        globalCache.set(cacheKey, results, 3600);
+        return results;
+      }
     }
 
     const existing = inFlightSearch.get(cacheKey);
@@ -661,7 +663,7 @@ export async function searchCourses(
   }
 
   const promise = (async () => {
-    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 10000;
+    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 4000;
     const isCodeQuery = /^\d{5,6}$/.test(qTrimmed);
 
     // Fast-path 1: Numeric course code direct schedule lookup
@@ -742,7 +744,7 @@ export async function searchCourses(
         const parsed = parseCourseSearchHtml(html);
 
         if (parsed.length > 0) {
-          if (allowFallback) {
+          if (allowFallback && !qTrimmed && !department) {
             globalCache.set(CATALOG_CACHE_KEY, parsed, 7200); // 2 hours
           }
           const filtered = filterCourses(parsed, qTrimmed, department);
