@@ -7,9 +7,26 @@ import type {
 } from '../types/index.js';
 import { globalCache } from '../utils/cache.js';
 import dbSeedData from '../data/db_seed.json';
+import {
+  FIREFLY_BASE_URL,
+  academicYearRange,
+  fallbackAcademicYear,
+  fireflyGet,
+  fireflyPost,
+  isRateLimitedHtml,
+  openLatestYearSession,
+  parseYearDropdown,
+  type FireflySession,
+} from './firefly.js';
 
-export const FIREFLY_BASE_URL = 'https://info.braude.ac.il/yedion/fireflyweb.aspx';
+export { FIREFLY_BASE_URL, academicYearRange, fallbackAcademicYear };
 export const CATALOG_CACHE_KEY = 'course_catalog:all';
+
+const PLACEHOLDER_INSTRUCTORS = new Set(['סגל המחלקה', 'מתרגל/ת הקורס', 'אחראי/ת מעבדה']);
+
+export function isPlaceholderInstructor(instructor: string): boolean {
+  return PLACEHOLDER_INSTRUCTORS.has(instructor.trim());
+}
 
 export const FALLBACK_COURSES_SEARCH_HTML = `
 <!DOCTYPE html>
@@ -138,6 +155,41 @@ export function classifyGroupType(text: string): GroupType {
   return 'other';
 }
 
+const DAY_NAME_TO_LETTER: Array<[string, string]> = [
+  ['ראשון', "א'"],
+  ['שני', "ב'"],
+  ['שלישי', "ג'"],
+  ['רביעי', "ד'"],
+  ['חמישי', "ה'"],
+  ['שישי', "ו'"],
+];
+
+/**
+ * Maps FireFly day labels ("יום רביעי", "ד'") to Hebrew letters.
+ * Returns undefined when the cell is not a weekday — never invents Sunday.
+ */
+export function parseHebrewDay(text: string): string | undefined {
+  const cleaned = text.replace(/יום/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return undefined;
+
+  for (const [name, letter] of DAY_NAME_TO_LETTER) {
+    if (cleaned.includes(name)) {
+      return letter;
+    }
+  }
+
+  const letterMatch = cleaned.match(/^([א-ו])'?$/);
+  if (letterMatch) {
+    return `${letterMatch[1]}'`;
+  }
+  return undefined;
+}
+
+function parseTimeCell(text: string): string | undefined {
+  const match = text.match(/(\d{1,2}:\d{2})/);
+  return match ? match[1] : undefined;
+}
+
 /**
  * Filters a list of CourseSummary objects against a search query and optional department
  */
@@ -255,116 +307,194 @@ export function parseCourseSearchHtml(html: string): CourseSummary[] {
 }
 
 /**
- * Dynamically detects the latest active/upcoming academic year from Braude FireFly portal.
- * Reads the year dropdown on Enter_Search or calculates based on current date.
+ * Dynamically detects the latest academic year from the FireFly year dropdown.
+ * Does not hardcode a Gregorian year.
  */
 export async function detectLatestAcademicYear(timeoutMs: number = 4000): Promise<string> {
-  const defaultYear = String(
-    new Date().getFullYear() + (new Date().getMonth() >= 5 ? 1 : 0)
-  );
-
   try {
-    const url = buildFireflyUrl('Enter_Search');
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: 'follow',
-    });
-
-    if (response.ok) {
-      const html = await response.text();
-      const $ = cheerio.load(html);
-      const years: number[] = [];
-
-      $('select[name="R1C39"] option').each((_, opt) => {
-        const val = $(opt).attr('value');
-        if (val && /^\d{4}$/.test(val)) {
-          years.push(parseInt(val, 10));
-        }
-      });
-
-      if (years.length > 0) {
-        years.sort((a, b) => b - a);
-        return String(years[0]);
-      }
+    const html = await fireflyGet(createThrowawayJar(), 'Enter_Search', {}, timeoutMs);
+    const years = parseYearDropdown(html);
+    if (years.length > 0) {
+      return years[0];
     }
   } catch {
     // Fall back to calculated default year if network fails
   }
 
-  return defaultYear;
+  return fallbackAcademicYear();
+}
+
+function createThrowawayJar() {
+  return { cookies: new Map<string, string>() };
 }
 
 /**
- * Fetches and parses the entire Braude course catalog strictly for the latest academic semester/year.
- * Ensures the latest semester is the authoritative single source of truth without duplicates.
+ * Parses FireFly "חיפוש לפי ימים ושעות" (S_YFineDate) rows into real schedule slots.
+ * These rows are the published weekly timetable — never synthesized.
+ */
+export function parseTimetableHtml(html: string): Array<{
+  courseCode: string;
+  courseName: string;
+  semester: string;
+  group: CourseGroup;
+}> {
+  const $ = cheerio.load(html);
+  const results: Array<{
+    courseCode: string;
+    courseName: string;
+    semester: string;
+    group: CourseGroup;
+  }> = [];
+
+  $('.row').each((_, el) => {
+    const cols = $(el)
+      .find('.col')
+      .map((__, c) => $(c).text().replace(/\s+/g, ' ').trim())
+      .get();
+
+    if (cols.length < 7) return;
+    if (cols[0] === 'קוד קורס' || cols[1] === 'שם קורס') return;
+
+    const codeMatch = cols[0].match(/\d{5,6}/);
+    if (!codeMatch) return;
+
+    const dayOfWeek = parseHebrewDay(cols[4] || '');
+    const startTime = parseTimeCell(cols[5] || '');
+    const endTime = parseTimeCell(cols[6] || '');
+    if (!dayOfWeek || !startTime || !endTime) {
+      return;
+    }
+
+    const courseCode = codeMatch[0];
+    const courseName = cols[1].replace(/&nbsp;/g, '').trim();
+    const typeHebrew = cols[2].trim();
+    const semester = cols[3].trim();
+    const instructor = (cols[7] || '').replace(/&nbsp;/g, '').trim() || 'לא צוין';
+
+    const href = $(el).find('a[href*="S_CourseDetails"]').attr('href') || '';
+    const groupIdMatch = href.match(/-N\d{5,6},-N\d+,-N\d+,-N(\d+)/);
+    const groupNumber = groupIdMatch ? groupIdMatch[1].slice(-2).padStart(2, '0') : '00';
+
+    results.push({
+      courseCode,
+      courseName,
+      semester,
+      group: {
+        groupNumber,
+        groupType: classifyGroupType(typeHebrew),
+        groupTypeHebrew: typeHebrew || 'אחר',
+        instructor,
+        dayOfWeek,
+        startTime,
+        endTime,
+        location: '',
+      },
+    });
+  });
+
+  return results;
+}
+
+function groupKey(group: CourseGroup): string {
+  return `${group.groupNumber}|${group.groupType}|${group.dayOfWeek}|${group.startTime}|${group.endTime}|${group.instructor}`;
+}
+
+export function mergeTimetableSlots(
+  slots: Array<{ courseCode: string; courseName: string; semester: string; group: CourseGroup }>,
+  fetchedAt: string
+): Record<string, CourseScheduleDetail> {
+  const schedules: Record<string, CourseScheduleDetail> = {};
+
+  for (const slot of slots) {
+    const existing = schedules[slot.courseCode];
+    if (!existing) {
+      schedules[slot.courseCode] = {
+        courseCode: slot.courseCode,
+        courseName: slot.courseName,
+        credits: 0,
+        groups: [slot.group],
+        fetchedAt,
+      };
+      continue;
+    }
+
+    if (!existing.groups.some((g) => groupKey(g) === groupKey(slot.group))) {
+      existing.groups.push(slot.group);
+    }
+  }
+
+  return schedules;
+}
+
+/**
+ * Fetches the published weekly timetable for every semester of the session year.
+ */
+export async function fetchLatestTimetable(
+  session: FireflySession,
+  timeoutMs: number = 20000
+): Promise<Record<string, CourseScheduleDetail>> {
+  const fetchedAt = new Date().toISOString();
+  const slots: Array<{
+    courseCode: string;
+    courseName: string;
+    semester: string;
+    group: CourseGroup;
+  }> = [];
+
+  for (const semester of ['1', '2', '3']) {
+    try {
+      const html = await fireflyPost(
+        session.jar,
+        'S_YFineDate',
+        'R1C7,R1C5,R1C6',
+        { R1C7: semester, R1C5: '7', R1C6: '1' },
+        timeoutMs
+      );
+      if (isRateLimitedHtml(html)) {
+        throw new Error(`FireFly rate-limited while fetching semester ${semester} timetable`);
+      }
+      slots.push(...parseTimetableHtml(html));
+    } catch (error: any) {
+      if (String(error?.message || error).includes('rate-limited')) {
+        throw error;
+      }
+      // Semester B/summer may be unpublished; keep whatever we already have
+    }
+  }
+
+  return mergeTimetableSlots(slots, fetchedAt);
+}
+
+/**
+ * Fetches the course catalog for the latest academic year via a FireFly session POST.
+ * GET query-string year filters are ignored by the portal and must not be used.
  */
 export async function fetchAllCoursesCatalog(
   targetYear?: string,
-  timeoutMs: number = 8000
+  timeoutMs: number = 8000,
+  session?: FireflySession
 ): Promise<CourseSummary[]> {
-  const latestYear = targetYear || (await detectLatestAcademicYear(timeoutMs));
   const coursesMap = new Map<string, CourseSummary>();
 
-  // 1. Fetch latest academic year view FIRST (authoritative priority)
   try {
-    const yearUrl = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
-      R1C39: latestYear,
-      arguments: `-N,-A${latestYear}`,
-    });
-    const yearResponse = await fetch(yearUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: 'follow',
-    });
+    const activeSession = session || (await openLatestYearSession(timeoutMs, targetYear));
+    const catalogHtml = await fireflyPost(
+      activeSession.jar,
+      'S_LOOK_FOR_NOSE_AB',
+      `-N,-A${activeSession.year}`,
+      {},
+      timeoutMs
+    );
 
-    if (yearResponse.ok) {
-      const yearHtml = await yearResponse.text();
-      if (!yearHtml.includes('השהיית גישה זמנית') && !yearHtml.includes('יותר מידי שאילתות')) {
-        const parsedYear = parseCourseSearchHtml(yearHtml);
-        parsedYear.forEach((c) => {
-          if (c.courseCode) {
-            coursesMap.set(c.courseCode, c);
-          }
-        });
+    if (!isRateLimitedHtml(catalogHtml)) {
+      for (const course of parseCourseSearchHtml(catalogHtml)) {
+        if (course.courseCode) {
+          coursesMap.set(course.courseCode, course);
+        }
       }
     }
   } catch {
-    // Continue
-  }
-
-  // 2. Fetch main catalog view to discover any remaining active courses not yet in the map
-  try {
-    const mainUrl = buildFireflyUrl('S_LOOK_FOR_NOSE_AB');
-    const response = await fetch(mainUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: 'follow',
-    });
-
-    if (response.ok) {
-      const html = await response.text();
-      if (!html.includes('השהיית גישה זמנית') && !html.includes('יותר מידי שאילתות')) {
-        const parsed = parseCourseSearchHtml(html);
-        parsed.forEach((c) => {
-          // Only add if not already captured from the latest semester
-          if (c.courseCode && !coursesMap.has(c.courseCode)) {
-            coursesMap.set(c.courseCode, c);
-          }
-        });
-      }
-    }
-  } catch {
-    // Continue
+    // Continue to seed names-only fallback
   }
 
   if (coursesMap.size === 0) {
@@ -574,43 +704,37 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
         }
       }
 
-      let instructor = 'צוות הקורס';
+      let instructor = '';
       const instructorMatch = headerText.match(/מרצה הקורס\s*:\s*([^<\n\r\t]+?)(?=\s*פרטים|\s*שפת|\s*קבוצות|\s*הקורס|$)/);
       if (instructorMatch && instructorMatch[1].trim()) {
         instructor = instructorMatch[1].trim();
       }
 
-      let dayOfWeek = "א'";
-      let startTime = '08:30';
-      let endTime = '10:30';
-      let location = 'טרם נקבע';
+      let dayOfWeek: string | undefined;
+      let startTime: string | undefined;
+      let endTime: string | undefined;
+      let location = '';
 
       if (rows.length > 0) {
         rows.each((_: any, r: any) => {
           const cells = $(r)
             .find('.col, td, th')
-            .map((_, c) => $(c).text().replace(/\s+/g, ' ').trim())
+            .map((__, c) => $(c).text().replace(/\s+/g, ' ').trim())
             .get();
 
           if (cells.length >= 4 && cells.some((c) => c.includes('יום') || /\d{1,2}:\d{2}/.test(c))) {
             const dayCell = cells.find((c, idx) => idx !== 0 && (c.includes('יום') || /^[א-ו]'$/.test(c)));
             const targetDayText = dayCell || (cells.length >= 2 ? cells[1] : '');
-
-            if (targetDayText.includes('ראשון')) dayOfWeek = "א'";
-            else if (targetDayText.includes('שני')) dayOfWeek = "ב'";
-            else if (targetDayText.includes('שלישי')) dayOfWeek = "ג'";
-            else if (targetDayText.includes('רביעי')) dayOfWeek = "ד'";
-            else if (targetDayText.includes('חמישי')) dayOfWeek = "ה'";
-            else if (targetDayText.includes('שישי')) dayOfWeek = "ו'";
-            else if (/^[א-ו]'$/.test(targetDayText)) dayOfWeek = targetDayText;
+            const parsedDay = parseHebrewDay(targetDayText);
+            if (parsedDay) dayOfWeek = parsedDay;
 
             if (cells.length >= 6) {
-              if (/\d{1,2}:\d{2}/.test(cells[2])) startTime = cells[2];
-              if (/\d{1,2}:\d{2}/.test(cells[3])) endTime = cells[3];
-              if (cells[4] && cells[4].length > 2 && !cells[4].includes('מרצה') && instructor === 'צוות הקורס') {
+              if (/\d{1,2}:\d{2}/.test(cells[2])) startTime = parseTimeCell(cells[2]) || startTime;
+              if (/\d{1,2}:\d{2}/.test(cells[3])) endTime = parseTimeCell(cells[3]) || endTime;
+              if (cells[4] && cells[4].length > 2 && !cells[4].includes('מרצה') && !instructor) {
                 instructor = cells[4];
               }
-              if (cells[5] && cells[5].length > 1) location = cells[5];
+              if (cells[5] && cells[5].length > 1 && !cells[5].includes('פרטים')) location = cells[5];
             } else {
               cells.forEach((cellText) => {
                 const timeMatch = cellText.match(/(\d{1,2}:\d{2})\s*[\u2013\u2014-]\s*(\d{1,2}:\d{2})/);
@@ -624,11 +748,15 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
         });
       }
 
+      if (!dayOfWeek || !startTime || !endTime) {
+        continue;
+      }
+
       groups.push({
         groupNumber,
         groupType,
         groupTypeHebrew,
-        instructor,
+        instructor: instructor || 'לא צוין',
         dayOfWeek,
         startTime,
         endTime,
@@ -659,11 +787,11 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
       let groupNumber = '01';
       let groupType: GroupType = 'lecture';
       let groupTypeHebrew = 'הרצאה';
-      let instructor = 'צוות הקורס';
-      let dayOfWeek = "א'";
-      let startTime = '08:30';
-      let endTime = '10:30';
-      let location = 'טרם נקבע';
+      let instructor = '';
+      let dayOfWeek: string | undefined;
+      let startTime: string | undefined;
+      let endTime: string | undefined;
+      let location = '';
 
       cells.forEach((cellText) => {
         const isGroupTypeLabel =
@@ -697,9 +825,9 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
           instructor = cellText.replace(/^מרצה\s*:\s*/, '').trim();
         }
 
-        if (/^[א-ו]'?$/.test(cellText) || cellText.startsWith('יום ')) {
-          const dayClean = cellText.replace('יום', '').trim();
-          dayOfWeek = dayClean.endsWith("'") ? dayClean : `${dayClean}'`;
+        const parsedDay = parseHebrewDay(cellText);
+        if (parsedDay && (cellText.startsWith('יום ') || /^[א-ו]'?$/.test(cellText))) {
+          dayOfWeek = parsedDay;
         }
 
         const timeMatch = cellText.match(/(\d{1,2}:\d{2})\s*[\u2013\u2014-]\s*(\d{1,2}:\d{2})/);
@@ -721,11 +849,15 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
         }
       });
 
+      if (!dayOfWeek || !startTime || !endTime) {
+        return;
+      }
+
       groups.push({
         groupNumber,
         groupType,
         groupTypeHebrew,
-        instructor,
+        instructor: instructor || 'לא צוין',
         dayOfWeek,
         startTime,
         endTime,
@@ -927,8 +1059,28 @@ export async function searchCourses(
 
 const inFlightSchedule = new Map<string, Promise<CourseScheduleDetail>>();
 
+async function parseLiveScheduleHtml(
+  html: string,
+  cleanCode: string
+): Promise<CourseScheduleDetail | null> {
+  if (isRateLimitedHtml(html)) {
+    return null;
+  }
+  try {
+    const liveDetail = parseCourseScheduleHtml(html, cleanCode);
+    if (liveDetail && liveDetail.groups && liveDetail.groups.length > 0) {
+      return liveDetail;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /**
- * Live course schedule details fetcher with Stale-While-Revalidate caching and static test fallback
+ * Live course schedule details fetcher.
+ * Uses the portal's latest academic year (session POST). GET without a year switch
+ * returns "not taught this semester" for next-year courses.
  */
 export async function getCourseSchedule(
   courseCode: string,
@@ -950,13 +1102,21 @@ export async function getCourseSchedule(
   }
 
   const promise = (async () => {
+    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 8000;
+
+    const tryCache = (detail: CourseScheduleDetail) => {
+      if (allowFallback) {
+        globalCache.set(cacheKey, detail, 3600);
+      }
+      return detail;
+    };
+
+    // 1. GET without year — keeps unit tests that mock this URL working, and
+    //    succeeds when the course is taught in the portal's default semester.
     const url = buildFireflyUrl('S_LOOK_FOR_NOSE', {
       arguments: `-N${cleanCode}`,
     });
 
-    const timeoutMs = Number(process.env.FETCH_TIMEOUT_MS) || 4000;
-
-    let detail: CourseScheduleDetail;
     try {
       const response = await fetch(url, {
         headers: {
@@ -969,18 +1129,9 @@ export async function getCourseSchedule(
 
       if (response.ok) {
         const html = await response.text();
-        try {
-          const liveDetail = parseCourseScheduleHtml(html, cleanCode);
-          if (liveDetail && liveDetail.groups && liveDetail.groups.length > 0) {
-            if (allowFallback) {
-              globalCache.set(cacheKey, liveDetail, 3600); // Cache for 1 hour
-            }
-            return liveDetail;
-          }
-        } catch (parseErr: any) {
-          if (!allowFallback) {
-            throw parseErr;
-          }
+        const liveDetail = await parseLiveScheduleHtml(html, cleanCode);
+        if (liveDetail) {
+          return tryCache(liveDetail);
         }
       } else if (!allowFallback) {
         throw new Error(`Failed to fetch course schedule: HTTP ${response.status} ${response.statusText}`);
@@ -991,39 +1142,38 @@ export async function getCourseSchedule(
       }
     }
 
-    // 1. Primary Fallback: Stale cached live schedule (Last-Known-Good)
+    // 2. Latest-year session POST — required for courses only taught next year
+    try {
+      const session = await openLatestYearSession(timeoutMs);
+      const html = await fireflyPost(
+        session.jar,
+        'S_LOOK_FOR_NOSE',
+        'SubjectCode',
+        { SubjectCode: cleanCode },
+        timeoutMs
+      );
+      const liveDetail = await parseLiveScheduleHtml(html, cleanCode);
+      if (liveDetail) {
+        return tryCache(liveDetail);
+      }
+    } catch (err: any) {
+      if (!allowFallback) {
+        throw err;
+      }
+    }
+
     const staleCached = globalCache.getStale<CourseScheduleDetail>(cacheKey);
     if (staleCached) {
       return staleCached;
     }
 
-    // 2. Secondary Fallback: Static test mock for offline environments / CI
-    const fallbackCourses = parseCourseSearchHtml(FALLBACK_COURSES_SEARCH_HTML);
-    const knownCourse = fallbackCourses.find((c) => c.courseCode === cleanCode);
-
-    if (!knownCourse) {
-      throw new Error(`Course code '${cleanCode}' was not found or is not taught this semester.`);
+    // CI-only fixture for the well-known sample course. Never copy this
+    // timetable onto a different course code.
+    if (allowFallback && cleanCode === '61767') {
+      return tryCache(parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, cleanCode));
     }
 
-    if (cleanCode === '61767') {
-      detail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, cleanCode);
-      if (allowFallback) {
-        globalCache.set(cacheKey, detail, 3600);
-      }
-      return detail;
-    }
-
-    const baseDetail = parseCourseScheduleHtml(FALLBACK_COURSE_61767_HTML, '61767');
-    detail = {
-      ...baseDetail,
-      courseCode: knownCourse.courseCode,
-      courseName: knownCourse.courseName,
-      credits: knownCourse.credits || baseDetail.credits,
-    };
-    if (allowFallback) {
-      globalCache.set(cacheKey, detail, 3600);
-    }
-    return detail;
+    throw new Error(`Course code '${cleanCode}' was not found or is not taught this semester.`);
   })().finally(() => {
     inFlightSchedule.delete(cacheKey);
   });

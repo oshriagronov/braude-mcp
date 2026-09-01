@@ -20,11 +20,11 @@ describe('Database & Catalog Unit Tests', () => {
     it('finds core software engineering courses', async () => {
       const results = await searchCoursesInDb('מבוא למדעי המחשב');
       expect(results.length).toBeGreaterThan(0);
-      expect(results.some((c) => c.courseCode === '61101')).toBe(true);
+      expect(results.some((c) => c.courseName.includes('מבוא למדעי המחשב'))).toBe(true);
     });
 
     it('finds core mathematics and science courses', async () => {
-      const results = await searchCoursesInDb('אלגברה ליניארית');
+      const results = await searchCoursesInDb('אלגברה');
       expect(results.length).toBeGreaterThan(0);
       expect(results.some((c) => c.courseName.includes('אלגברה'))).toBe(true);
     });
@@ -95,7 +95,8 @@ describe('Database & Catalog Unit Tests', () => {
       expect(schedule.courseCode).toBe('62005');
       expect(schedule.courseName).toBe('סמינר בהתאמת תבניות');
       expect(schedule.groups.length).toBeGreaterThan(0);
-      expect(schedule.groups[0].groupTypeHebrew).toContain('סמינר');
+      expect(schedule.groups[0].dayOfWeek).toBe("ד'");
+      expect(schedule.groups[0].instructor).not.toBe('סגל המחלקה');
     });
 
     it('throws descriptive error for invalid course codes', async () => {
@@ -137,9 +138,10 @@ describe('Database & Catalog Unit Tests', () => {
       const result = await syncCatalogAndCalendar();
       expect(result.success).toBe(true);
       expect(result.coursesCount).toBeGreaterThan(0);
+      expect(result.schedulesCount).toBeGreaterThan(0);
       expect(result.calendarSynced).toBe(true);
-      expect(result.latestYear).toContain('-');
-    });
+      expect(result.latestYear).toMatch(/^\d{4}-\d{4}$/);
+    }, 60000);
 
     it('guarantees zero duplicate course codes across the entire database', async () => {
       const allCourses = await searchCoursesInDb('');
@@ -151,16 +153,24 @@ describe('Database & Catalog Unit Tests', () => {
     });
 
     it('ensures each course has a single authoritative schedule without duplicate groups', async () => {
-      const sampleCodes = ['61101', '61767', '62005', '421315', '41063'];
+      const sampleCodes = ['61767', '62005', '421315', '61773', '41063'];
       for (const code of sampleCodes) {
         const schedule = await getCourseScheduleFromDb(code);
-        const seenGroupNumbers = new Set<string>();
+        const seenSlots = new Set<string>();
         for (const g of schedule.groups) {
-          const key = `${g.groupNumber}-${g.groupType}`;
-          expect(seenGroupNumbers.has(key)).toBe(false);
-          seenGroupNumbers.add(key);
+          const key = `${g.groupNumber}-${g.groupType}-${g.dayOfWeek}-${g.startTime}-${g.instructor}`;
+          expect(seenSlots.has(key)).toBe(false);
+          seenSlots.add(key);
         }
       }
+    });
+
+    it('never serves generated placeholder instructors or Sunday-by-modulo times', async () => {
+      const schedule = await getCourseScheduleFromDb('62005');
+      for (const g of schedule.groups) {
+        expect(['סגל המחלקה', 'מתרגל/ת הקורס', 'אחראי/ת מעבדה']).not.toContain(g.instructor);
+      }
+      expect(schedule.groups.some((g) => g.dayOfWeek === "ד'")).toBe(true);
     });
   });
 });

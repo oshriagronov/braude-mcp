@@ -1,7 +1,8 @@
-import { getAcademicCalendarFromDb } from '../../db/client.js';
+import { getAcademicCalendarFromDb, type D1Database } from '../../db/client.js';
 
 export async function handleGetAcademicCalendar(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  db?: D1Database
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: boolean }> {
   try {
     const rawYear = args.year;
@@ -10,7 +11,7 @@ export async function handleGetAcademicCalendar(
         ? String(rawYear).trim()
         : undefined;
 
-    const calendarData = await getAcademicCalendarFromDb(year);
+    const calendarData = await getAcademicCalendarFromDb(year, db);
 
     return {
       content: [

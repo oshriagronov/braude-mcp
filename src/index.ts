@@ -95,7 +95,7 @@ app.post('/mcp', async (c) => {
   }
 
   try {
-    const response = await handleMcpRequest(body);
+    const response = await handleMcpRequest(body, c.env?.DB);
     return c.json(response);
   } catch (error: any) {
     return c.json(

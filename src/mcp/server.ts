@@ -4,6 +4,7 @@ import type {
   McpToolDefinition,
   McpResourceDefinition,
 } from '../types/index.js';
+import type { D1Database } from '../db/client.js';
 import { handleGetAcademicCalendar } from './tools/calendar.js';
 import { handleSearchCourses, handleGetCourseSchedule } from './tools/course.js';
 import { handleReadCurrentCalendar } from './resources/calendar.js';
@@ -97,7 +98,8 @@ export function createJsonRpcSuccess(
 }
 
 export async function handleMcpRequest(
-  payload: unknown
+  payload: unknown,
+  db?: D1Database
 ): Promise<JsonRpcResponse> {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
     return createJsonRpcError(null, -32600, 'Invalid Request: Payload must be an object');
@@ -154,17 +156,17 @@ export async function handleMcpRequest(
       }
 
       if (toolName === 'get_academic_calendar') {
-        const result = await handleGetAcademicCalendar(toolArgs);
+        const result = await handleGetAcademicCalendar(toolArgs, db);
         return createJsonRpcSuccess(id, result);
       }
 
       if (toolName === 'search_courses') {
-        const result = await handleSearchCourses(toolArgs);
+        const result = await handleSearchCourses(toolArgs, db);
         return createJsonRpcSuccess(id, result);
       }
 
       if (toolName === 'get_course_schedule') {
-        const result = await handleGetCourseSchedule(toolArgs);
+        const result = await handleGetCourseSchedule(toolArgs, db);
         return createJsonRpcSuccess(id, result);
       }
 
@@ -198,7 +200,7 @@ export async function handleMcpRequest(
 
       if (uri === 'braude://calendar/current') {
         try {
-          const result = await handleReadCurrentCalendar();
+          const result = await handleReadCurrentCalendar(db);
           return createJsonRpcSuccess(id, result);
         } catch (err: any) {
           return createJsonRpcError(

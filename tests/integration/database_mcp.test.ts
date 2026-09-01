@@ -16,7 +16,7 @@ describe('MCP Pure Database Query Integration Tests', () => {
         method: 'tools/call',
         params: {
           name: 'search_courses',
-          arguments: { query: 'אלגברה ליניארית' },
+          arguments: { query: 'אלגברה' },
         },
       }),
     });

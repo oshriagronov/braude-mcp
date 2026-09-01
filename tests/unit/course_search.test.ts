@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   parseCourseSearchHtml,
   parseCourseScheduleHtml,
+  parseTimetableHtml,
+  parseHebrewDay,
   searchCourses,
   getCourseSchedule,
   classifyGroupType,
@@ -127,6 +129,70 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       expect(classifyGroupType('תרגיל')).toBe('recitation');
       expect(classifyGroupType('מעבדה')).toBe('lab');
       expect(classifyGroupType('סמינר')).toBe('other');
+    });
+  });
+
+  describe('parseHebrewDay', () => {
+    it('maps FireFly weekday names to Hebrew letters without defaulting to Sunday', () => {
+      expect(parseHebrewDay('יום רביעי')).toBe("ד'");
+      expect(parseHebrewDay('יום שלישי')).toBe("ג'");
+      expect(parseHebrewDay("א'")).toBe("א'");
+      expect(parseHebrewDay('סמסטר')).toBeUndefined();
+      expect(parseHebrewDay('')).toBeUndefined();
+    });
+  });
+
+  describe('parseTimetableHtml', () => {
+    it('parses real S_YFineDate rows including seminar 62005 on Wednesday', () => {
+      const html = `
+        <div class="Table container">
+          <div class="row">
+            <div class="col col-Small">קוד קורס</div>
+            <div class="col">שם קורס</div>
+            <div class="col">סוג קורס</div>
+            <div class="col col-Small">סמסטר</div>
+            <div class="col col-Small">יום בשבוע</div>
+            <div class="col col-Small">שעת התחלה</div>
+            <div class="col col-Small">שעת סיום</div>
+            <div class="col">מרצה</div>
+            <div class="col">פרטים נוספים</div>
+          </div>
+          <div class="row">
+            <div class="col col-Small">62005</div>
+            <div class="col">סמינר בהתאמת תבניות</div>
+            <div class="col">הרצאה</div>
+            <div class="col col-Small">א</div>
+            <div class="col col-Small">יום רביעי</div>
+            <div class="col col-Small">12:50</div>
+            <div class="col col-Small">15:50</div>
+            <div class="col">ד"ר אידריס גזאוי סמאח</div>
+            <div class="col"><a href="fireflyweb.aspx?prgname=S_CourseDetails&amp;arguments=-N62005,-N1,-N1,-N271060420,-N">פרטים</a></div>
+          </div>
+        </div>
+      `;
+      const slots = parseTimetableHtml(html);
+      expect(slots).toHaveLength(1);
+      expect(slots[0].courseCode).toBe('62005');
+      expect(slots[0].group.dayOfWeek).toBe("ד'");
+      expect(slots[0].group.startTime).toBe('12:50');
+      expect(slots[0].group.endTime).toBe('15:50');
+      expect(slots[0].group.instructor).toContain('אידריס');
+    });
+
+    it('skips rows that do not include a real weekday', () => {
+      const html = `
+        <div class="row">
+          <div class="col">62005</div>
+          <div class="col">סמינר בהתאמת תבניות</div>
+          <div class="col">הרצאה</div>
+          <div class="col">א</div>
+          <div class="col"></div>
+          <div class="col">12:50</div>
+          <div class="col">15:50</div>
+          <div class="col">ד"ר אידריס</div>
+        </div>
+      `;
+      expect(parseTimetableHtml(html)).toEqual([]);
     });
   });
 
@@ -304,6 +370,57 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       expect(detail.groups[1].startTime).toBe('08:30');
       expect(detail.groups[1].endTime).toBe('10:30');
       expect(detail.groups[1].location).toBe('308 M');
+    });
+
+    it('does not invent a Sunday slot when the page has a group header but no weekday', () => {
+      const html = `
+        <html lang="he"><body>
+          <div class="TextAlignRight">קורס מסוג הרצאה קבוצה : 10 מרצה הקורס : ד"ר כהן</div>
+        </body></html>
+      `;
+      const detail = parseCourseScheduleHtml(html, '62005');
+      expect(detail.groups).toEqual([]);
+    });
+
+    it('parses live FireFly seminar 62005 as Wednesday, not Sunday', () => {
+      const html = `
+        <html lang="he" dir="rtl"><body>
+          <div>קורס סמינר בהתאמת תבניות שנה"ל תשפ"ז</div>
+          <div class="col">
+            <div class="TextAlignRight">
+              קורס מסוג הרצאה
+              <span>קבוצה : 271060420</span>
+              מרצה הקורס : ד"ר אידריס גזאוי סמאח
+            </div>
+            <div class="card searchWrapper MasterTable">
+              <div class="Table container">
+                <div class="row">
+                  <div class="col">סמסטר</div>
+                  <div class="col">יום בשבוע</div>
+                  <div class="col">שעת התחלה</div>
+                  <div class="col">שעת סיום</div>
+                  <div class="col">מרצה</div>
+                  <div class="col">חדר לימוד</div>
+                </div>
+                <div class="row">
+                  <div class="col">א</div>
+                  <div class="col">יום רביעי</div>
+                  <div class="col">12:50</div>
+                  <div class="col">15:50</div>
+                  <div class="col">ד"ר אידריס גזאוי סמאח</div>
+                  <div class="col">309 M</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </body></html>
+      `;
+      const detail = parseCourseScheduleHtml(html, '62005');
+      expect(detail.groups).toHaveLength(1);
+      expect(detail.groups[0].dayOfWeek).toBe("ד'");
+      expect(detail.groups[0].startTime).toBe('12:50');
+      expect(detail.groups[0].endTime).toBe('15:50');
+      expect(detail.groups[0].location).toBe('309 M');
     });
 
     it('correctly extracts course title from FireFly "קורס ... שנה\\"ל" header format', () => {

@@ -1,9 +1,9 @@
-import { getAcademicCalendarFromDb } from '../../db/client.js';
+import { getAcademicCalendarFromDb, type D1Database } from '../../db/client.js';
 
-export async function handleReadCurrentCalendar(): Promise<{
+export async function handleReadCurrentCalendar(db?: D1Database): Promise<{
   contents: Array<{ uri: string; mimeType: string; text: string }>;
 }> {
-  const calendarData = await getAcademicCalendarFromDb();
+  const calendarData = await getAcademicCalendarFromDb(undefined, db);
   return {
     contents: [
       {

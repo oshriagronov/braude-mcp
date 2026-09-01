@@ -30,7 +30,7 @@ describe('M3 Challenger Stress & Concurrency Suite', () => {
 
       const tools = ['search_courses', 'get_course_schedule', 'get_academic_calendar'];
       const searchQueries = ['אבטחת מידע', 'מבוא למדעי המחשב', 'מבני נתונים', 'אלגוריתמים'];
-      const courseCodes = ['61767', '61101', '61204', '61307'];
+      const courseCodes = ['61767', '62005', '61773', '421315'];
       const years = ['2025-2026', '2024-2025', 'תשפ"ו'];
 
       const promises = Array.from({ length: CONCURRENCY }, (_, i) => {

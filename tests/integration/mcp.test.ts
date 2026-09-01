@@ -588,7 +588,7 @@ describe('Braude MCP Remote HTTP POST /mcp E2E 4-Tier Test Suite', () => {
         { method: 'tools/call', params: { name: 'get_academic_calendar', arguments: {} } },
         { method: 'tools/call', params: { name: 'search_courses', arguments: { query: 'אלגברה' } } },
         { method: 'resources/read', params: { uri: 'braude://calendar/current' } },
-        { method: 'tools/call', params: { name: 'get_course_schedule', arguments: { courseCode: '61101' } } },
+        { method: 'tools/call', params: { name: 'get_course_schedule', arguments: { courseCode: '61767' } } },
       ];
 
       for (let i = 0; i < toolSequence.length; i++) {
@@ -707,7 +707,7 @@ describe('Braude MCP Remote HTTP POST /mcp E2E 4-Tier Test Suite', () => {
     });
 
     it('4.2 Complete Course Info Lookup & Prerequisite Verification Flow', async () => {
-      // 1. Search for course '61101'
+      // 1. Search for course '61767'
       const searchRes = await doFetch('/mcp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -715,7 +715,7 @@ describe('Braude MCP Remote HTTP POST /mcp E2E 4-Tier Test Suite', () => {
           jsonrpc: '2.0',
           id: 410,
           method: 'tools/call',
-          params: { name: 'search_courses', arguments: { query: '61101' } },
+          params: { name: 'search_courses', arguments: { query: '61767' } },
         }),
       });
 
@@ -732,15 +732,15 @@ describe('Braude MCP Remote HTTP POST /mcp E2E 4-Tier Test Suite', () => {
           jsonrpc: '2.0',
           id: 411,
           method: 'tools/call',
-          params: { name: 'get_course_schedule', arguments: { courseCode: '61101' } },
+          params: { name: 'get_course_schedule', arguments: { courseCode: '61767' } },
         }),
       });
 
       const scheduleData = (await scheduleRes.json()) as any;
       expect(scheduleData.result.isError).toBe(false);
       const scheduleDetail = JSON.parse(scheduleData.result.content[0].text) as CourseScheduleDetail;
-      expect(scheduleDetail.courseCode).toBe('61101');
-      expect(scheduleDetail.credits).toBeGreaterThan(0);
+      expect(scheduleDetail.courseCode).toBe('61767');
+      expect(scheduleDetail.groups.length).toBeGreaterThan(0);
 
       // 3. Fetch academic calendar tool to verify exam periods
       const calRes = await doFetch('/mcp', {

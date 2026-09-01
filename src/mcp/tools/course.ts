@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { searchCoursesInDb, getCourseScheduleFromDb } from '../../db/client.js';
+import { searchCoursesInDb, getCourseScheduleFromDb, type D1Database } from '../../db/client.js';
 
 /**
  * Zod Schema for search_courses tool arguments
@@ -36,7 +36,8 @@ export type GetCourseScheduleArgs = z.infer<typeof getCourseScheduleSchema>;
  * Handler for search_courses MCP tool
  */
 export async function handleSearchCourses(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  db?: D1Database
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: boolean }> {
   try {
     const parseResult = searchCoursesSchema.safeParse(args);
@@ -54,7 +55,7 @@ export async function handleSearchCourses(
     }
 
     const { query, department } = parseResult.data;
-    const courses = await searchCoursesInDb(query, department);
+    const courses = await searchCoursesInDb(query, department, db);
 
     return {
       content: [
@@ -82,7 +83,8 @@ export async function handleSearchCourses(
  * Handler for get_course_schedule MCP tool
  */
 export async function handleGetCourseSchedule(
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  db?: D1Database
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: boolean }> {
   try {
     const parseResult = getCourseScheduleSchema.safeParse(args);
@@ -100,7 +102,7 @@ export async function handleGetCourseSchedule(
     }
 
     const { courseCode } = parseResult.data;
-    const schedule = await getCourseScheduleFromDb(courseCode);
+    const schedule = await getCourseScheduleFromDb(courseCode, db);
 
     return {
       content: [

@@ -8,6 +8,15 @@ import type {
 } from '../types/index.js';
 import dbSeedData from '../data/db_seed.json';
 
+const PLACEHOLDER_INSTRUCTORS = new Set(['סגל המחלקה', 'מתרגל/ת הקורס', 'אחראי/ת מעבדה']);
+
+export function isPlaceholderSchedule(groups: CourseGroup[] | undefined): boolean {
+  if (!groups || groups.length === 0) {
+    return false;
+  }
+  return groups.every((g) => PLACEHOLDER_INSTRUCTORS.has((g.instructor || '').trim()));
+}
+
 export interface D1PreparedStatement {
   bind(...values: any[]): D1PreparedStatement;
   all<T = any>(): Promise<{ results: T[]; success: boolean }>;
@@ -156,7 +165,9 @@ export async function getCourseScheduleFromDb(
           description: courseRow.description,
           syllabusUrl: courseRow.syllabusUrl,
           prerequisites: [],
-          groups: (groupRows || []) as CourseGroup[],
+          groups: isPlaceholderSchedule(groupRows as CourseGroup[])
+            ? []
+            : ((groupRows || []) as CourseGroup[]),
           fetchedAt: new Date().toISOString(),
         };
       }
@@ -165,14 +176,13 @@ export async function getCourseScheduleFromDb(
     }
   }
 
-  // 2. Query in-memory bundled database seed
+  // 2. Query in-memory bundled database seed — real scraped schedules only
   const schedulesMap = (dbSeedData.schedules || {}) as Record<string, CourseScheduleDetail>;
   const cachedDetail = schedulesMap[cleanCode];
-  if (cachedDetail) {
+  if (cachedDetail && !isPlaceholderSchedule(cachedDetail.groups)) {
     return cachedDetail;
   }
 
-  // Check if course exists in courses list
   const seedCourses = (dbSeedData.courses || []) as CourseSummary[];
   const foundCourse = seedCourses.find((c) => c.courseCode === cleanCode);
 
@@ -180,36 +190,16 @@ export async function getCourseScheduleFromDb(
     throw new Error(`Course code '${cleanCode}' was not found or is not taught this semester.`);
   }
 
-  // Return formatted schedule structure for the known course
   return {
     courseCode: foundCourse.courseCode,
     courseName: foundCourse.courseName,
-    credits: foundCourse.credits || 3.0,
-    description: `קורס ${foundCourse.courseName} (קוד ${foundCourse.courseCode}) במחלקת ${foundCourse.department || 'הנדסה'}.`,
+    credits: foundCourse.credits || 0,
+    description: foundCourse.courseName
+      ? `קורס ${foundCourse.courseName} (קוד ${foundCourse.courseCode})${foundCourse.department ? ` במחלקת ${foundCourse.department}` : ''}.`
+      : undefined,
     syllabusUrl: `https://info.braude.ac.il/info/${new Date().getFullYear()}/${cleanCode.padStart(7, '0')}.pdf`,
     prerequisites: [],
-    groups: [
-      {
-        groupNumber: '10',
-        groupType: 'lecture',
-        groupTypeHebrew: 'הרצאה',
-        instructor: 'סגל המחלקה',
-        dayOfWeek: "א'",
-        startTime: '08:30',
-        endTime: '10:30',
-        location: 'חדר 702 L (בניין ל)',
-      },
-      {
-        groupNumber: '11',
-        groupType: 'recitation',
-        groupTypeHebrew: 'תרגול',
-        instructor: 'מתרגל/ת הקורס',
-        dayOfWeek: "ג'",
-        startTime: '11:30',
-        endTime: '13:30',
-        location: 'חדר 204 E (בניין ה)',
-      },
-    ],
+    groups: [],
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -367,11 +357,19 @@ export async function syncDatabaseFromScrape(
     courses?: CourseSummary[];
     calendar?: any;
     schedules?: Record<string, CourseScheduleDetail>;
+    replaceAll?: boolean;
   }
 ): Promise<{ success: boolean; coursesInserted: number; groupsInserted: number }> {
   let coursesInserted = 0;
   let groupsInserted = 0;
   const now = new Date().toISOString();
+
+  if (data.replaceAll) {
+    await db.prepare('DELETE FROM course_groups').run();
+    if (data.courses && data.courses.length > 0) {
+      await db.prepare('DELETE FROM courses').run();
+    }
+  }
 
   if (data.courses && data.courses.length > 0) {
     const courseStatements: D1PreparedStatement[] = [];
@@ -394,16 +392,15 @@ export async function syncDatabaseFromScrape(
             c.courseCode,
             c.courseName,
             c.department || null,
-            c.credits || 3.0,
+            c.credits ?? null,
             'נלמד',
-            `קורס ${c.courseName} (קוד ${c.courseCode}) במחלקת ${c.department || 'הנדסה'}.`,
+            `קורס ${c.courseName} (קוד ${c.courseCode})${c.department ? ` במחלקת ${c.department}` : ''}.`,
             `https://info.braude.ac.il/info/${new Date().getFullYear()}/${c.courseCode.padStart(7, '0')}.pdf`,
             now
           )
       );
     }
 
-    // Run batch in chunks of 50
     for (let i = 0; i < courseStatements.length; i += 50) {
       const chunk = courseStatements.slice(i, i + 50);
       await db.batch(chunk);
@@ -411,40 +408,45 @@ export async function syncDatabaseFromScrape(
     }
   }
 
-  if (data.schedules) {
+  if (data.schedules && Object.keys(data.schedules).length > 0) {
     const groupStatements: D1PreparedStatement[] = [];
     const courseCodesToClear = Object.keys(data.schedules);
 
-    // First, clear old groups for updated courses to prevent duplicates across semesters
-    for (const code of courseCodesToClear) {
-      groupStatements.push(
-        db.prepare('DELETE FROM course_groups WHERE course_code = ?').bind(code)
-      );
+    if (!data.replaceAll) {
+      for (const code of courseCodesToClear) {
+        groupStatements.push(
+          db.prepare('DELETE FROM course_groups WHERE course_code = ?').bind(code)
+        );
+      }
     }
 
     for (const [code, sched] of Object.entries(data.schedules)) {
-      if (sched.groups && sched.groups.length > 0) {
-        for (const g of sched.groups) {
-          groupStatements.push(
-            db
-              .prepare(
-                `INSERT INTO course_groups (course_code, group_number, group_type, group_type_hebrew, instructor, day_of_week, start_time, end_time, location, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-              )
-              .bind(
-                code,
-                g.groupNumber,
-                g.groupType,
-                g.groupTypeHebrew,
-                g.instructor,
-                g.dayOfWeek,
-                g.startTime,
-                g.endTime,
-                g.location,
-                now
-              )
-          );
+      if (!sched.groups || sched.groups.length === 0 || isPlaceholderSchedule(sched.groups)) {
+        continue;
+      }
+      for (const g of sched.groups) {
+        if (isPlaceholderSchedule([g]) || !g.dayOfWeek || !g.startTime || !g.endTime) {
+          continue;
         }
+        groupStatements.push(
+          db
+            .prepare(
+              `INSERT INTO course_groups (course_code, group_number, group_type, group_type_hebrew, instructor, day_of_week, start_time, end_time, location, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .bind(
+              code,
+              g.groupNumber,
+              g.groupType,
+              g.groupTypeHebrew,
+              g.instructor,
+              g.dayOfWeek,
+              g.startTime,
+              g.endTime,
+              g.location || '',
+              now
+            )
+        );
       }
     }
 
