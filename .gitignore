@@ -1,29 +1,62 @@
 # Dependencies
 node_modules/
+.pnp
+.pnp.js
 
 # Build & Output
 dist/
+build/
 *.tsbuildinfo
+.mf/
 
-# Cloudflare Wrangler & Dev
+# Cloudflare Wrangler & Local DB/Secrets
 .wrangler/
 .dev.vars
+.dev.vars.*
+.cloudflare/
 
-# Environment & Config
+# Environment, API Keys & Secrets
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 .env.*
 !.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+credentials.json
+service-account*.json
+secrets.json
 
-# Testing & Coverage
+# Testing, Logs & Reports
 coverage/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.vitest/
 
 # Editor & OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Agent scratch directory
+# Agent & Scratch directories
 .agents/
+scratch/
+
 

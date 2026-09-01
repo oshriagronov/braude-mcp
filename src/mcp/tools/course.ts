@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { searchCourses, getCourseSchedule } from '../../scrapers/course_search.js';
+import { searchCoursesInDb, getCourseScheduleFromDb } from '../../db/client.js';
 
 /**
  * Zod Schema for search_courses tool arguments
@@ -54,7 +54,7 @@ export async function handleSearchCourses(
     }
 
     const { query, department } = parseResult.data;
-    const courses = await searchCourses(query, department);
+    const courses = await searchCoursesInDb(query, department);
 
     return {
       content: [
@@ -100,7 +100,7 @@ export async function handleGetCourseSchedule(
     }
 
     const { courseCode } = parseResult.data;
-    const schedule = await getCourseSchedule(courseCode);
+    const schedule = await getCourseScheduleFromDb(courseCode);
 
     return {
       content: [

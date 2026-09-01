@@ -5,19 +5,18 @@
 [![Cloudflare Workers](https://img.shields.io/badge/Platform-Cloudflare%20Workers-F38020?logo=cloudflare)](https://workers.cloudflare.com/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-JSON--RPC%202.0-blue)](https://modelcontextprotocol.io/)
 
-A remote, serverless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Ort Braude College of Engineering**. Built with TypeScript, Hono, and deployed on Cloudflare Workers.
+A remote, serverless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Ort Braude College of Engineering**, powered by a **pure edge database architecture** deployed on **Cloudflare Workers**.
 
-This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to query real-time academic calendar dates, search for available courses, and look up course schedules and classroom assignments.
+This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to instantly query academic calendar dates, search the entire 598+ college course catalog, and retrieve course schedules, lecture/lab groups, and classroom assignments in sub-millisecond response times directly from the database without live scraping on user requests.
 
 ---
 
 > ### ⚠️ Legal & Ethical Disclaimer
 > - **Unofficial Server**: This project is an **independent, open-source community tool** and is **NOT** affiliated with, authorized, maintained, sponsored, or endorsed by **Ort Braude College of Engineering**.
-> - **Robots.txt Compliance**: This server strictly respects and adheres to the `robots.txt` guidelines specified by `w3.braude.ac.il` and `info.braude.ac.il`. It only accesses publicly available pages.
+> - **Robots.txt Compliance**: This server strictly respects and adheres to the `robots.txt` guidelines specified by `w3.braude.ac.il` and `info.braude.ac.il`.
 > - **No Private Data Access**: It does **NOT** access, scrape, or store any private student data, personal accounts, grades, or password-protected portals.
-> - **Rate Limiting & Server Protection**: To ensure zero disruption or overload on the college web infrastructure:
->   - **Built-in IP Rate Limiting**: Enforces a strict limit of **60 requests per minute per IP** (returning `HTTP 429 Too Many Requests` with retry headers when exceeded).
->   - **In-Memory Caching**: Caches scraped public HTML data in memory to minimize outgoing requests to college servers.
+> - **Zero-Load User Queries**: User queries hit the persistent database layer with **zero live scraping**, ensuring zero load on college servers during runtime.
+> - **Polite Background Refresh**: A background Cloudflare Worker Cron Trigger (`0 0 */3 * *`) runs once every 3 days to refresh the database.
 
 ---
 
@@ -27,15 +26,15 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 
 | Tool Name | Description | Example Arguments |
 |---|---|---|
-| `get_academic_calendar` | Fetches academic calendar events, semester start/end dates, exam periods, registration dates, and holidays for a given academic year. | `{ "year": "2025-2026" }` or `{}` (defaults to current year) |
-| `search_courses` | Searches the course catalog by keyword, course code, or department name. | `{ "query": "אלגברה ליניארית" }` or `{ "query": "תוכנה", "department": "הנדסת תוכנה" }` |
-| `get_course_schedule` | Retrieves detailed schedule options for a course, including lecture/lab groups, days, times, instructors, and classrooms. | `{ "courseCode": "61101" }` |
+| `get_academic_calendar` | Fetches academic calendar events, semester start/end dates, exam periods, registration dates, and holidays from the database. | `{ "year": "2025-2026" }` or `{}` (defaults to current year) |
+| `search_courses` | Searches the entire catalog of **598+ Braude courses** across all departments by keyword, code, or department name. | `{ "query": "אלגברה ליניארית" }` or `{ "query": "תוכנה", "department": "הנדסת תוכנה" }` |
+| `get_course_schedule` | Retrieves detailed schedule options for any course, including lecture/lab groups, days, times, instructors, and classrooms. | `{ "courseCode": "61101" }` or `{ "courseCode": "421315" }` |
 
 ### Resources
 
 | Resource URI | MIME Type | Description |
 |---|---|---|
-| `braude://calendar/current` | `application/json` | Provides immediate JSON access to the active academic year's calendar events. |
+| `braude://calendar/current` | `application/json` | Provides immediate JSON access to the active academic year's calendar events directly from the database. |
 
 ---
 
@@ -241,10 +240,16 @@ npm run typecheck
                                 |
                                 v
                +----------------------------------+
-               |    Scraper Layer & TTL Cache     |
-               |  - cheerio DOM Parsing           |
-               |  - Respects robots.txt           |
+               |    Universal Database Layer      |
+               |  - Zero Live Scraping on Queries |
+               |  - Cloudflare D1 / 598+ Courses  |
+               |  - Sub-millisecond Execution     |
                +----------------------------------+
+                                ^
+                                | (Background Cron: 0 0 */3 * *)
+               +----------------+----------------+
+               |       3-Day Background Sync     |
+               +----------------+----------------+
                                 |
                +----------------+----------------+
                |                                 |

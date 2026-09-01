@@ -5,3 +5,13 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
+
+# Background periodic scraper refresh every 3 days at midnight UTC
+[triggers]
+crons = ["0 0 */3 * *"]
+
+# Free Cloudflare D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "braude_courses"
+database_id = "68fb00c1-a473-4220-bccc-8a176984a572"

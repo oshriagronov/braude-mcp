@@ -6,6 +6,7 @@ import type {
   GroupType,
 } from '../types/index.js';
 import { globalCache } from '../utils/cache.js';
+import dbSeedData from '../data/db_seed.json';
 
 export const FIREFLY_BASE_URL = 'https://info.braude.ac.il/yedion/fireflyweb.aspx';
 export const CATALOG_CACHE_KEY = 'course_catalog:all';
@@ -251,6 +252,127 @@ export function parseCourseSearchHtml(html: string): CourseSummary[] {
   });
 
   return results;
+}
+
+/**
+ * Dynamically detects the latest active/upcoming academic year from Braude FireFly portal.
+ * Reads the year dropdown on Enter_Search or calculates based on current date.
+ */
+export async function detectLatestAcademicYear(timeoutMs: number = 4000): Promise<string> {
+  const defaultYear = String(
+    new Date().getFullYear() + (new Date().getMonth() >= 5 ? 1 : 0)
+  );
+
+  try {
+    const url = buildFireflyUrl('Enter_Search');
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'follow',
+    });
+
+    if (response.ok) {
+      const html = await response.text();
+      const $ = cheerio.load(html);
+      const years: number[] = [];
+
+      $('select[name="R1C39"] option').each((_, opt) => {
+        const val = $(opt).attr('value');
+        if (val && /^\d{4}$/.test(val)) {
+          years.push(parseInt(val, 10));
+        }
+      });
+
+      if (years.length > 0) {
+        years.sort((a, b) => b - a);
+        return String(years[0]);
+      }
+    }
+  } catch {
+    // Fall back to calculated default year if network fails
+  }
+
+  return defaultYear;
+}
+
+/**
+ * Fetches and parses the entire Braude course catalog strictly for the latest academic semester/year.
+ * Ensures the latest semester is the authoritative single source of truth without duplicates.
+ */
+export async function fetchAllCoursesCatalog(
+  targetYear?: string,
+  timeoutMs: number = 8000
+): Promise<CourseSummary[]> {
+  const latestYear = targetYear || (await detectLatestAcademicYear(timeoutMs));
+  const coursesMap = new Map<string, CourseSummary>();
+
+  // 1. Fetch latest academic year view FIRST (authoritative priority)
+  try {
+    const yearUrl = buildFireflyUrl('S_LOOK_FOR_NOSE_AB', {
+      R1C39: latestYear,
+      arguments: `-N,-A${latestYear}`,
+    });
+    const yearResponse = await fetch(yearUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'follow',
+    });
+
+    if (yearResponse.ok) {
+      const yearHtml = await yearResponse.text();
+      if (!yearHtml.includes('השהיית גישה זמנית') && !yearHtml.includes('יותר מידי שאילתות')) {
+        const parsedYear = parseCourseSearchHtml(yearHtml);
+        parsedYear.forEach((c) => {
+          if (c.courseCode) {
+            coursesMap.set(c.courseCode, c);
+          }
+        });
+      }
+    }
+  } catch {
+    // Continue
+  }
+
+  // 2. Fetch main catalog view to discover any remaining active courses not yet in the map
+  try {
+    const mainUrl = buildFireflyUrl('S_LOOK_FOR_NOSE_AB');
+    const response = await fetch(mainUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'follow',
+    });
+
+    if (response.ok) {
+      const html = await response.text();
+      if (!html.includes('השהיית גישה זמנית') && !html.includes('יותר מידי שאילתות')) {
+        const parsed = parseCourseSearchHtml(html);
+        parsed.forEach((c) => {
+          // Only add if not already captured from the latest semester
+          if (c.courseCode && !coursesMap.has(c.courseCode)) {
+            coursesMap.set(c.courseCode, c);
+          }
+        });
+      }
+    }
+  } catch {
+    // Continue
+  }
+
+  if (coursesMap.size === 0) {
+    const seedCourses = (dbSeedData.courses || []) as CourseSummary[];
+    return seedCourses;
+  }
+
+  return Array.from(coursesMap.values());
 }
 
 /**

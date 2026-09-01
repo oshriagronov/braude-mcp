@@ -2,8 +2,16 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { handleMcpRequest, createJsonRpcError } from './mcp/server.js';
 import { createRateLimiter } from './middleware/rate_limit.js';
+import { syncCatalogAndCalendar } from './scrapers/sync.js';
+import type { D1Database } from './db/client.js';
 
-const app = new Hono();
+export interface Env {
+  ENVIRONMENT?: string;
+  RATE_LIMIT_MAX?: string;
+  DB?: D1Database;
+}
+
+const app = new Hono<{ Bindings: Env }>();
 
 const maxRequests = Number(process.env.RATE_LIMIT_MAX) || (process.env.VITEST ? 10000 : 60);
 
@@ -37,12 +45,33 @@ app.get('/health', (c) => {
 app.get('/', (c) => {
   return c.json({
     name: 'braude-mcp',
-    description: 'Remote MCP Server for Ort Braude College',
+    description: 'Remote MCP Server for Ort Braude College with Universal Database Architecture',
     endpoints: {
       mcp: '/mcp',
       health: '/health',
+      sync: '/sync',
     },
   });
+});
+
+// Manual Sync Trigger Endpoint
+app.all('/sync', async (c) => {
+  try {
+    const result = await syncCatalogAndCalendar(c.env?.DB);
+    return c.json({
+      status: 'success',
+      message: 'Scraper sync completed successfully',
+      result,
+    });
+  } catch (error: any) {
+    return c.json(
+      {
+        status: 'error',
+        message: error?.message || 'Sync failed',
+      },
+      500
+    );
+  }
 });
 
 // Main MCP JSON-RPC Handler Endpoint
@@ -58,7 +87,7 @@ app.post('/mcp', async (c) => {
   let body: unknown;
   try {
     body = await c.req.json();
-  } catch (err) {
+  } catch {
     return c.json(
       createJsonRpcError(null, -32700, 'Parse error: Invalid JSON payload'),
       400
@@ -80,4 +109,11 @@ app.post('/mcp', async (c) => {
   }
 });
 
-export default app;
+// Cloudflare Worker export with Scheduled (Cron) Trigger handler
+export default {
+  fetch: app.fetch,
+  scheduled: async (event: any, env: Env, ctx: any) => {
+    ctx.waitUntil(syncCatalogAndCalendar(env.DB));
+  },
+};
+

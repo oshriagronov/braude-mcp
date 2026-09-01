@@ -1,9 +1,9 @@
-import { fetchAcademicCalendar } from '../../scrapers/calendar.js';
+import { getAcademicCalendarFromDb } from '../../db/client.js';
 
 export async function handleReadCurrentCalendar(): Promise<{
   contents: Array<{ uri: string; mimeType: string; text: string }>;
 }> {
-  const calendarData = await fetchAcademicCalendar();
+  const calendarData = await getAcademicCalendarFromDb();
   return {
     contents: [
       {

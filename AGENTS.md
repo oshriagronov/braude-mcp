@@ -111,18 +111,17 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
 1. **Serverless Worker Isolates**:
    - Cloudflare Workers are stateless and short-lived.
    - Do NOT introduce persistent filesystem operations, long-lived background timers (`setInterval`), or Node.js native binary dependencies (`fs`, `child_process`).
-2. **Robots.txt & Public Access Only**:
-   - Scrapers MUST only access public URLs on `w3.braude.ac.il` and `info.braude.ac.il`.
+2. **Universal Database Architecture (Zero Live Scraping on Queries)**:
+   - All MCP tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`) and resources (`braude://calendar/current`) **query directly from the Cloudflare D1 database or bundled seed (`src/data/db_seed.json`)**.
+   - **No user query should ever make an outbound network call to Braude's servers during runtime.**
+3. **Periodic Background Ingestion (Every 3 Days)**:
+   - A Cloudflare Cron Trigger (`0 0 */3 * *`) runs the background sync job in [src/scrapers/sync.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/scrapers/sync.ts) to scrape the full 598+ course catalog and academic calendar and persist them to Cloudflare D1.
+4. **Robots.txt & Public Access Only**:
+   - Background scrapers MUST only access public URLs on `w3.braude.ac.il` and `info.braude.ac.il`.
    - Never attempt to bypass logins, scrape authenticated student portals, or access private data.
-3. **Rate Limiting, Caching & Fallback Hierarchy**:
+5. **Rate Limiting & Server Protection**:
    - Maintain the sliding window IP rate limiter in [src/middleware/rate_limit.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/middleware/rate_limit.ts).
-   - **Stale-While-Revalidate Caching**: In [src/utils/cache.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/utils/cache.ts), cached entries retain their data even after expiration (`getStale()`). A cache entry is **only overwritten upon a successful live scrape**.
-   - **Multi-Tier Fallback Hierarchy**:
-     1. **Fresh Cache**: If valid unexpired data exists in `MemoryCache`, serve immediately (0ms).
-     2. **Live Scrape**: Attempt live fetch from the college portal with appropriate timeout (default 4s, configurable via `FETCH_TIMEOUT_MS`).
-     3. **Stale Cache (Last-Known-Good)**: If live fetch fails, times out, or returns a temporary portal error, serve the stale cached data (`getStale()`) to guarantee continuity of accurate live information.
-     4. **Test Mocks (Cold-Start / CI Safety)**: Static fallback HTML fixtures are strictly reserved for test harnesses and cold-start offline CI environments (e.g., GitHub Actions runners) so CI pipelines remain deterministic without failing on college portal downtime.
-4. **JSON-RPC 2.0 / MCP Compliance**:
+6. **JSON-RPC 2.0 / MCP Compliance**:
    - All `/mcp` POST responses must return valid JSON-RPC 2.0 objects with proper `id`, `result`, or `error` structures.
    - Tool execution results must use `{ content: [{ type: "text", text: JSON.stringify(...) }], isError?: boolean }`.
 

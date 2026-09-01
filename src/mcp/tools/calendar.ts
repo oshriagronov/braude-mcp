@@ -1,4 +1,4 @@
-import { fetchAcademicCalendar } from '../../scrapers/calendar.js';
+import { getAcademicCalendarFromDb } from '../../db/client.js';
 
 export async function handleGetAcademicCalendar(
   args: Record<string, unknown>
@@ -10,7 +10,7 @@ export async function handleGetAcademicCalendar(
         ? String(rawYear).trim()
         : undefined;
 
-    const calendarData = await fetchAcademicCalendar(year);
+    const calendarData = await getAcademicCalendarFromDb(year);
 
     return {
       content: [

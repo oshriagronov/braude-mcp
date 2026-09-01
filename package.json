@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "build": "tsc --noEmit",
     "deploy": "wrangler deploy",
+    "sync": "vitest run -t \"syncs catalog and calendar\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
