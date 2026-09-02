@@ -122,7 +122,7 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
    - Implementation: [src/scrapers/firefly.ts](src/scrapers/firefly.ts).
 5. **Periodic Background Ingestion (Every 3 Days)**:
    - Cron (`0 0 */3 * *`) and `POST /sync` run [src/scrapers/sync.ts](src/scrapers/sync.ts): year switch, latest-year catalog (`S_LOOK_FOR_NOSE_AB`), weekly timetable (`S_YFineDate`), per-course detail pages (credits, syllabus, rooms), calendar, persist to D1.
-   - After deploy, trigger `/sync` so production D1 is not left on stale generated rows.
+   - After deploy, the owner triggers `POST /sync` with `Authorization: Bearer $SYNC_SECRET` (`wrangler secret put SYNC_SECRET`). Never ship an open `/sync`.
    - Rebuild timetable seed with `npm run refresh-seed`. Then `npm run enrich-seed` to scrape per-course credits (נקודות זכות), פרשיית לימוד, and syllabus PDFs (resumable; skips courses that already have them).
 6. **Robots.txt & Public Access Only**:
    - Background scrapers MUST only access public URLs on `w3.braude.ac.il` and `info.braude.ac.il`.
@@ -172,7 +172,13 @@ Deploys to Cloudflare Workers using Wrangler:
 ```bash
 npm run deploy
 ```
-Then refresh D1: `POST /sync` on the deployed Worker.
+Then set `npx wrangler secret put SYNC_SECRET` and refresh D1 as the owner:
+
+```bash
+curl -X POST https://<worker>.workers.dev/sync -H "Authorization: Bearer $SYNC_SECRET"
+```
+
+Do not leave `/sync` unauthenticated. Cron (`scheduled`) still runs without HTTP.
 
 ---
 

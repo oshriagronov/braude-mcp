@@ -4,10 +4,12 @@ import { handleMcpRequest, createJsonRpcError } from './mcp/server.js';
 import { createRateLimiter } from './middleware/rate_limit.js';
 import { syncCatalogAndCalendar } from './scrapers/sync.js';
 import type { D1Database } from './db/client.js';
+import { extractSyncToken, isValidSyncToken } from './middleware/sync_auth.js';
 
 export interface Env {
   ENVIRONMENT?: string;
   RATE_LIMIT_MAX?: string;
+  SYNC_SECRET?: string;
   DB?: D1Database;
 }
 
@@ -49,13 +51,17 @@ app.get('/', (c) => {
     endpoints: {
       mcp: '/mcp',
       health: '/health',
-      sync: '/sync',
     },
   });
 });
 
-// Manual Sync Trigger Endpoint
-app.all('/sync', async (c) => {
+// Owner-only manual sync. Cron still runs without HTTP.
+app.post('/sync', async (c) => {
+  const allowed = await isValidSyncToken(extractSyncToken(c.req.raw), c.env?.SYNC_SECRET);
+  if (!allowed) {
+    return c.json({ status: 'error', message: 'Unauthorized' }, 401);
+  }
+
   try {
     const result = await syncCatalogAndCalendar(c.env?.DB);
     return c.json({

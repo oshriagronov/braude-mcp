@@ -125,11 +125,20 @@ for Gemini Spark go to "Connected Apps", scroll down to "Custome Apps" and click
    npm run deploy
    ```
 
-4. **Refresh D1 with the latest scraped timetable** (required after the first deploy, and whenever schedules look stale):
+4. **Set an owner-only sync secret** (required; `/sync` is not public):
    ```bash
-   curl -X POST https://braude-mcp.<your-subdomain>.workers.dev/sync
+   npx wrangler secret put SYNC_SECRET
+   ```
+   Paste a long random token when prompted. Do not commit it.
+
+5. **Refresh D1** (you only, with that secret):
+   ```bash
+   curl -X POST https://braude-mcp.<your-subdomain>.workers.dev/sync \
+     -H "Authorization: Bearer YOUR_SYNC_SECRET"
    ```
    Queries read D1 first, then the bundled seed. Until `/sync` runs, production D1 may still hold old data.
+
+   The 3-day Cloudflare cron still refreshes D1 automatically and does not use HTTP, so it does not need this token.
 
 ---
 
@@ -200,6 +209,7 @@ Now, every `git push` to `main` will automatically test and deploy your worker!
 |---|---|---|
 | `ENVIRONMENT` | `production` | Deployment environment state |
 | `RATE_LIMIT_MAX` | `60` | Maximum requests allowed per IP per 1-minute window |
+| `SYNC_SECRET` | _(none)_ | Owner token for `POST /sync`. Set with `wrangler secret put SYNC_SECRET`, never in git. |
 
 To set custom environment variables locally for development, copy `.env.example` to `.dev.vars`:
 ```bash
