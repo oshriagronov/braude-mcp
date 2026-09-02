@@ -52,6 +52,9 @@ export interface CourseSummary {
   courseName: string;
   department?: string;
   credits?: number;
+  description?: string;
+  syllabusUrl?: string;
+  prerequisites?: string[];
 }
 
 export interface CourseScheduleDetail {

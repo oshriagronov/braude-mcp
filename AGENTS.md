@@ -38,46 +38,42 @@ This guide is designed for AI coding assistants (e.g., Antigravity, Claude Code,
 braude-mcp/
 ├── .github/workflows/
 │   └── deploy.yml              # CI/CD pipeline (typecheck, tests, wrangler deploy)
+├── scripts/
+│   └── refresh-seed.ts         # Rebuild src/data/db_seed.json from live latest-year scrape
 ├── src/
-│   ├── index.ts                # App entry point, Hono router (/mcp, /health, /), CORS & rate limiting
+│   ├── index.ts                # Hono router (/mcp, /health, /sync), CORS, rate limit, cron
+│   ├── data/
+│   │   └── db_seed.json        # Bundled latest-year catalog + scraped schedules (seed fallback)
+│   ├── db/
+│   │   ├── client.ts           # D1 / seed queries; never returns generated timetable slots
+│   │   └── schema.sql          # D1 tables: courses, course_groups, academic_calendar
 │   ├── mcp/
-│   │   ├── server.ts           # MCP Server setup & JSON-RPC 2.0 dispatcher
+│   │   ├── server.ts           # JSON-RPC 2.0 dispatcher (passes D1 into tool handlers)
 │   │   ├── tools/
-│   │   │   ├── calendar.ts     # get_academic_calendar tool registration
-│   │   │   └── course.ts       # search_courses & get_course_schedule tools registration
+│   │   │   ├── calendar.ts     # get_academic_calendar
+│   │   │   └── course.ts       # search_courses & get_course_schedule
 │   │   └── resources/
-│   │       └── calendar.ts     # braude://calendar/current resource registration
+│   │       └── calendar.ts     # braude://calendar/current
 │   ├── scrapers/
-│   │   ├── calendar.ts         # Scraper for w3.braude.ac.il (Academic Calendar HTML parsing)
-│   │   └── course_search.ts    # Scraper for info.braude.ac.il (FireFly Web course search)
+│   │   ├── calendar.ts         # w3.braude.ac.il academic calendar
+│   │   ├── course_search.ts    # Catalog + S_YFineDate timetable parsers
+│   │   ├── firefly.ts          # Cookie session + POST "מעבר שנה" (year is never hardcoded)
+│   │   └── sync.ts             # Cron / POST /sync: scrape latest year into D1
 │   ├── middleware/
-│   │   └── rate_limit.ts       # Sliding window IP-based rate limiter (60 req/min/IP)
+│   │   └── rate_limit.ts       # Sliding window IP rate limiter (60 req/min/IP)
 │   ├── utils/
-│   │   └── cache.ts            # In-memory TTL cache for scraped data
+│   │   └── cache.ts            # In-memory TTL cache
 │   └── types/
-│       └── index.ts            # Shared TypeScript interfaces & types
+│       └── index.ts            # Shared TypeScript interfaces
 ├── tests/
-│   ├── unit/                   # Scraper, cache, & rate limit unit tests
-│   │   ├── cache.test.ts
-│   │   ├── calendar.test.ts
-│   │   ├── course_search.test.ts
-│   │   └── rate_limit.test.ts
+│   ├── unit/                   # Scraper, cache, DB, FireFly, rate-limit tests
 │   └── integration/            # JSON-RPC /mcp HTTP POST integration & stress tests
-│       ├── calendar_mcp.test.ts
-│       ├── course_mcp.test.ts
-│       ├── mcp.test.ts
-│       ├── mcp_adversarial.test.ts
-│       ├── m1_stress.test.ts
-│       ├── m2_challenger.test.ts
-│       ├── m2_challenger_stress.test.ts
-│       ├── m3_challenger.test.ts
-│       └── m3_challenger_stress.test.ts
-├── package.json                # Dependencies, scripts, and package specs
-├── wrangler.toml               # Cloudflare Workers deployment config
-├── tsconfig.json               # TypeScript compiler config
-├── vitest.config.ts            # Vitest testing environment setup
-├── PROJECT.md                  # Detailed architectural spec & milestone inventory
-└── README.md                   # User documentation, client setups & deployment guide
+├── package.json
+├── wrangler.toml
+├── tsconfig.json
+├── vitest.config.ts
+├── PROJECT.md
+└── README.md
 ```
 
 ---
@@ -86,19 +82,19 @@ braude-mcp/
 
 ### MCP Tools
 
-1. **`get_academic_calendar`** ([src/mcp/tools/calendar.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/mcp/tools/calendar.ts))
-   - **Input**: `{ year?: string }` (e.g. `"2025-2026"`, or omit for current year)
+1. **`get_academic_calendar`** ([src/mcp/tools/calendar.ts](src/mcp/tools/calendar.ts))
+   - **Input**: `{ year?: string }` (e.g. `"2026-2027"`, or omit for current year)
    - **Output**: JSON containing semester dates, exam periods, registration dates, and holidays.
-2. **`search_courses`** ([src/mcp/tools/course.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/mcp/tools/course.ts))
-   - **Input**: `{ query: string, department?: string }` (e.g. `{ "query": "אלגברה ליניארית" }`)
-   - **Output**: Array of course summary objects matching the query.
-3. **`get_course_schedule`** ([src/mcp/tools/course.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/mcp/tools/course.ts))
-   - **Input**: `{ courseCode: string }` (e.g. `{ "courseCode": "61101" }`)
-   - **Output**: Detailed course slots, groups (lectures/labs), instructors, days, hours, and classrooms.
+2. **`search_courses`** ([src/mcp/tools/course.ts](src/mcp/tools/course.ts))
+   - **Input**: `{ query: string, department?: string }` (e.g. `{ "query": "אלגברה" }`)
+   - **Output**: Array of course summary objects matching the query in the **latest academic year** catalog.
+3. **`get_course_schedule`** ([src/mcp/tools/course.ts](src/mcp/tools/course.ts))
+   - **Input**: `{ courseCode: string }` (e.g. `{ "courseCode": "61767" }` or `"62005"`)
+   - **Output**: Scraped slots (lectures/labs, instructors, days, hours). Empty `groups` if the portal has not published hours — **never invented times**.
 
 ### MCP Resources
 
-1. **`braude://calendar/current`** ([src/mcp/resources/calendar.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/mcp/resources/calendar.ts))
+1. **`braude://calendar/current`** ([src/mcp/resources/calendar.ts](src/mcp/resources/calendar.ts))
    - **MIME Type**: `application/json`
    - **Output**: Immediate JSON object for active academic year calendar.
 
@@ -112,16 +108,28 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
    - Cloudflare Workers are stateless and short-lived.
    - Do NOT introduce persistent filesystem operations, long-lived background timers (`setInterval`), or Node.js native binary dependencies (`fs`, `child_process`).
 2. **Universal Database Architecture (Zero Live Scraping on Queries)**:
-   - All MCP tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`) and resources (`braude://calendar/current`) **query directly from the Cloudflare D1 database or bundled seed (`src/data/db_seed.json`)**.
+   - All MCP tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`) and resources (`braude://calendar/current`) **query Cloudflare D1 or the bundled seed (`src/data/db_seed.json`)**.
+   - Pass `c.env.DB` through `handleMcpRequest` into the tool handlers. Do not call scrapers from tool handlers.
    - **No user query should ever make an outbound network call to Braude's servers during runtime.**
-3. **Periodic Background Ingestion (Every 3 Days)**:
-   - A Cloudflare Cron Trigger (`0 0 */3 * *`) runs the background sync job in [src/scrapers/sync.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/scrapers/sync.ts) to scrape the full 598+ course catalog and academic calendar and persist them to Cloudflare D1.
-4. **Robots.txt & Public Access Only**:
+3. **Serve only scraped course data**:
+   - Never generate placeholder instructors (`סגל המחלקה`, `מתרגל/ת הקורס`) or days from `courseCode % 5`.
+   - `parseCourseScheduleHtml` / `parseTimetableHtml` must not default a missing weekday to Sunday (`א'`).
+   - Do not invent credits (`3.0`) or syllabus PDF URLs from `new Date().getFullYear()`. Credits and פרשיית לימוד come from each course's FireFly detail page; PDF URLs use the FireFly year (`/info/{year}/{paddedCode}.pdf`).
+   - If a course is in the catalog but has no published hours, return `groups: []`.
+4. **Latest academic year is dynamic (never hardcoded)**:
+   - Read the FireFly `ChangeYear` / `R1C39` dropdown and POST `PRGNAME=Enter_Search&ARGUMENTS=-A,,-A,ChangeYear`.
+   - GET query-string year filters (`R1C39=2027`) are **ignored** by FireFly. Session cookies + POST are required.
+   - Implementation: [src/scrapers/firefly.ts](src/scrapers/firefly.ts).
+5. **Periodic Background Ingestion (Every 3 Days)**:
+   - Cron (`0 0 */3 * *`) and `POST /sync` run [src/scrapers/sync.ts](src/scrapers/sync.ts): year switch, latest-year catalog (`S_LOOK_FOR_NOSE_AB`), weekly timetable (`S_YFineDate`), per-course detail pages (credits, syllabus, rooms), calendar, persist to D1.
+   - After deploy, trigger `/sync` so production D1 is not left on stale generated rows.
+   - Rebuild timetable seed with `npm run refresh-seed`. Then `npm run enrich-seed` to scrape per-course credits (נקודות זכות), פרשיית לימוד, and syllabus PDFs (resumable; skips courses that already have them).
+6. **Robots.txt & Public Access Only**:
    - Background scrapers MUST only access public URLs on `w3.braude.ac.il` and `info.braude.ac.il`.
    - Never attempt to bypass logins, scrape authenticated student portals, or access private data.
-5. **Rate Limiting & Server Protection**:
-   - Maintain the sliding window IP rate limiter in [src/middleware/rate_limit.ts](file:///Users/oshriagronov/Documents/mcp-cloudflare/braude-mcp/src/middleware/rate_limit.ts).
-6. **JSON-RPC 2.0 / MCP Compliance**:
+7. **Rate Limiting & Server Protection**:
+   - Maintain the sliding window IP rate limiter in [src/middleware/rate_limit.ts](src/middleware/rate_limit.ts).
+8. **JSON-RPC 2.0 / MCP Compliance**:
    - All `/mcp` POST responses must return valid JSON-RPC 2.0 objects with proper `id`, `result`, or `error` structures.
    - Tool execution results must use `{ content: [{ type: "text", text: JSON.stringify(...) }], isError?: boolean }`.
 
@@ -145,6 +153,9 @@ npm run typecheck
 
 # Verify wrangler build
 npm run build
+
+# Rebuild bundled seed from live FireFly latest year
+npm run refresh-seed
 ```
 
 ### Development Server
@@ -161,6 +172,7 @@ Deploys to Cloudflare Workers using Wrangler:
 ```bash
 npm run deploy
 ```
+Then refresh D1: `POST /sync` on the deployed Worker.
 
 ---
 

@@ -191,6 +191,54 @@ function parseTimeCell(text: string): string | undefined {
 }
 
 /**
+ * Parses נקודות זכות from FireFly course pages.
+ * Handles "נקודות זכות: 3.5", "3.5 נ\"ז", and the common "3 – 3 נ\"ז" (hours – credits) form.
+ */
+export function parseAcademicCredits(pageText: string): number | undefined {
+  const hoursAndCredits = pageText.match(
+    /(\d+(?:\.\d+)?)\s*[\u2013\u2014–-]\s*(\d+(?:\.\d+)?)\s*נ"ז/
+  );
+  if (hoursAndCredits) {
+    const credits = parseFloat(hoursAndCredits[2]);
+    return Number.isFinite(credits) ? credits : undefined;
+  }
+
+  const labeled =
+    pageText.match(/(?:נקודות זכות|נ"ז)\s*:\s*([\d.]+)/) || pageText.match(/([\d.]+)\s*נ"ז/);
+  if (labeled) {
+    const credits = parseFloat(labeled[1]);
+    return Number.isFinite(credits) ? credits : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Extracts פרשיית לימוד / syllabus body text from a FireFly course page.
+ */
+export function parseSyllabusDescription(pageText: string, courseCode: string): string | undefined {
+  const afterCredits = pageText.match(
+    new RegExp(
+      `פרשיית לימוד\\s+${courseCode}\\s+[^]*?\\d+(?:\\.\\d+)?\\s*[\\u2013\\u2014–-]\\s*\\d+(?:\\.\\d+)?\\s*נ"ז\\s+(.+?)(?:כדי לפתוח את התיבה|מדיניות הפרטיות|הצהרת נגישות|$)`
+    )
+  );
+  if (afterCredits && afterCredits[1].trim().length > 10) {
+    return afterCredits[1].replace(/\s+/g, ' ').trim();
+  }
+
+  const generic = pageText.match(
+    /(?:פרשיית לימוד|תיאור הקורס)\s*(?:\d{5,6}\s+.*?\s+נ"ז)?\s*(.+?)(?=מערכת שעות|קורס מסוג|כדי לפתוח את התיבה|מדיניות הפרטיות|$)/
+  );
+  if (generic && generic[1].trim().length > 20) {
+    return generic[1].replace(/\s+/g, ' ').trim();
+  }
+  return undefined;
+}
+
+export function syllabusPdfUrl(courseCode: string, fireflyYear: string): string {
+  return `https://info.braude.ac.il/info/${fireflyYear}/${courseCode.padStart(7, '0')}.pdf`;
+}
+
+/**
  * Filters a list of CourseSummary objects against a search query and optional department
  */
 export function filterCourses(
@@ -465,6 +513,138 @@ export async function fetchLatestTimetable(
   return mergeTimetableSlots(slots, fetchedAt);
 }
 
+function overlayGroupLocations(timetable: CourseGroup[], details: CourseGroup[]): void {
+  for (const group of timetable) {
+    if (group.location) continue;
+    const match = details.find(
+      (candidate) =>
+        candidate.dayOfWeek === group.dayOfWeek &&
+        candidate.startTime === group.startTime &&
+        !!candidate.location
+    );
+    if (match) {
+      group.location = match.location;
+    }
+  }
+}
+
+/**
+ * Fetches each course's FireFly detail page (latest-year session) and copies
+ * scraped credits, פרשיית לימוד, syllabus PDF, prerequisites, and rooms
+ * onto the catalog/timetable records. Sequential: the portal is cookie-stateful.
+ */
+export async function enrichWithCourseDetails(
+  session: FireflySession,
+  courses: CourseSummary[],
+  schedules: Record<string, CourseScheduleDetail>,
+  timeoutMs: number = 12000
+): Promise<{ detailsCount: number }> {
+  const codes = courses.map((c) => c.courseCode);
+  for (const code of Object.keys(schedules)) {
+    if (!codes.includes(code)) {
+      codes.push(code);
+    }
+  }
+
+  let detailsCount = 0;
+  let firstErrorLogged = false;
+
+  try {
+    await fireflyPost(
+      session.jar,
+      'Enter_Search',
+      '-A,,-A,ChangeYear',
+      { ChangeYear: session.year },
+      timeoutMs
+    );
+  } catch {
+    // Continue with the existing session if year re-switch fails
+  }
+
+  for (const code of codes) {
+    const existingCourse = courses.find((c) => c.courseCode === code);
+    const existingSchedule = schedules[code];
+    if (
+      (existingCourse?.credits || existingSchedule?.credits) &&
+      (existingCourse?.description || existingSchedule?.description)
+    ) {
+      detailsCount += 1;
+      continue;
+    }
+
+    try {
+      let html = await fireflyPost(
+        session.jar,
+        'S_LOOK_FOR_NOSE',
+        'SubjectCode',
+        { SubjectCode: code },
+        timeoutMs
+      );
+
+      if (isRateLimitedHtml(html)) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        html = await fireflyPost(
+          session.jar,
+          'S_LOOK_FOR_NOSE',
+          'SubjectCode',
+          { SubjectCode: code },
+          timeoutMs
+        );
+        if (isRateLimitedHtml(html)) {
+          continue;
+        }
+      }
+
+      const detail = parseCourseScheduleHtml(html, code);
+      detailsCount += 1;
+      if (detailsCount % 50 === 0) {
+        console.log(`[SYNC] Enriched ${detailsCount}/${codes.length} course detail pages`);
+      }
+
+      const pdf = detail.syllabusUrl || syllabusPdfUrl(code, session.year);
+      const course = existingCourse;
+      if (course) {
+        if (detail.credits) course.credits = detail.credits;
+        if (detail.description) course.description = detail.description;
+        course.syllabusUrl = pdf;
+        if (detail.prerequisites && detail.prerequisites.length > 0) {
+          course.prerequisites = detail.prerequisites;
+        }
+      }
+
+      const existing = schedules[code];
+      if (existing) {
+        if (detail.credits) existing.credits = detail.credits;
+        if (detail.description) existing.description = detail.description;
+        existing.syllabusUrl = pdf;
+        if (detail.prerequisites && detail.prerequisites.length > 0) {
+          existing.prerequisites = detail.prerequisites;
+        }
+        overlayGroupLocations(existing.groups, detail.groups);
+        if (existing.groups.length === 0 && detail.groups.length > 0) {
+          existing.groups = detail.groups;
+        }
+      } else if (detail.credits || detail.description || detail.groups.length > 0) {
+        schedules[code] = {
+          ...detail,
+          syllabusUrl: pdf,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    } catch (error: any) {
+      if (!firstErrorLogged) {
+        firstErrorLogged = true;
+        console.warn(
+          `[SYNC] Course detail scrape failed for ${code}: ${error?.message || error}`
+        );
+      }
+      continue;
+    }
+  }
+
+  return { detailsCount };
+}
+
 /**
  * Fetches the course catalog for the latest academic year via a FireFly session POST.
  * GET query-string year filters are ignored by the portal and must not be used.
@@ -522,7 +702,7 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
   }
 
   let courseName = requestedCode;
-  let credits = 3.0;
+  let credits = 0;
   const prerequisites: string[] = [];
 
   // Parse Title / Header
@@ -589,14 +769,12 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
     }
   }
 
-  // Parse credits
-  const creditsMatch = pageText.match(/(?:נ"ז|נקודות זכות)\s*:\s*([\d.]+)/) || pageText.match(/([\d.]+)\s*נ"ז/);
-  if (creditsMatch) {
-    credits = parseFloat(creditsMatch[1]);
+  const parsedCredits = parseAcademicCredits(pageText);
+  if (parsedCredits !== undefined) {
+    credits = parsedCredits;
   }
 
-  // Parse Course Description / Syllabus Text (פרשיית לימוד)
-  let description: string | undefined = undefined;
+  let description = parseSyllabusDescription(pageText, requestedCode);
   let syllabusUrl: string | undefined = undefined;
 
   $('a').each((_, a) => {
@@ -609,14 +787,8 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
     }
   });
 
-  if (!syllabusUrl && /^\d{5,6}$/.test(requestedCode)) {
-    const paddedCode = requestedCode.padStart(7, '0');
-    const currentYear = new Date().getFullYear();
-    syllabusUrl = `https://info.braude.ac.il/info/${currentYear}/${paddedCode}.pdf`;
-  }
-
   const descEl = $(`#ID_${requestedCode}, h3:contains("פרשיית לימוד"), h2:contains("פרשיית לימוד")`).first();
-  if (descEl.length > 0) {
+  if (!description && descEl.length > 0) {
     const rawDesc = descEl.next().text().trim() || descEl.parent().text().trim();
     const cleanedDesc = rawDesc
       .replace(/^פרשיית לימוד\s*/, '')
@@ -625,13 +797,6 @@ export function parseCourseScheduleHtml(html: string, requestedCode: string): Co
       .trim();
     if (cleanedDesc.length > 10) {
       description = cleanedDesc;
-    }
-  }
-
-  if (!description) {
-    const descMatch = pageText.match(/(?:פרשיית לימוד|תיאור הקורס)\s*(?:\d{5,6}\s+.*?\s+נ"ז)?\s*([^\n\r<]+?)(?=מערכת שעות|קבוצה|סמסטר|כדי לפתוח|$)/);
-    if (descMatch && descMatch[1].trim().length > 10) {
-      description = descMatch[1].trim();
     }
   }
 

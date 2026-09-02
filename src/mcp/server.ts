@@ -46,13 +46,13 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: 'get_course_schedule',
     description:
-      'Retrieves detailed schedule info for a course, including lectures, labs, instructors, time slots, and classrooms.',
+      'Retrieves scraped schedule info for a course: lectures/labs, instructors, days, hours, credits (נקודות זכות), and syllabus / פרשיית לימוד.',
     inputSchema: {
       type: 'object',
       properties: {
         courseCode: {
           type: 'string',
-          description: 'Unique course code (e.g., "61101")',
+          description: 'Unique course code (e.g., "61767" or "62005")',
         },
       },
       required: ['courseCode'],

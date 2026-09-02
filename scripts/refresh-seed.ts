@@ -24,12 +24,18 @@ async function main() {
 
   const snapshot = await scrapeLatestSnapshot(20000);
 
-  const courses: CourseSummary[] = snapshot.courses.map((course) => ({
-    ...course,
-    ...(deptByCode.get(course.courseCode) && !course.department
-      ? { department: deptByCode.get(course.courseCode) }
-      : {}),
-  }));
+  const courses: CourseSummary[] = snapshot.courses.map((course) => {
+    const schedule = snapshot.schedules[course.courseCode];
+    return {
+      ...course,
+      ...(deptByCode.get(course.courseCode) && !course.department
+        ? { department: deptByCode.get(course.courseCode) }
+        : {}),
+      ...(schedule?.credits && !course.credits ? { credits: schedule.credits } : {}),
+      ...(schedule?.description && !course.description ? { description: schedule.description } : {}),
+      ...(schedule?.syllabusUrl && !course.syllabusUrl ? { syllabusUrl: schedule.syllabusUrl } : {}),
+    };
+  });
 
   for (const [code, schedule] of Object.entries(snapshot.schedules)) {
     if (!courses.some((c) => c.courseCode === code)) {
@@ -37,6 +43,9 @@ async function main() {
         courseCode: code,
         courseName: schedule.courseName,
         ...(deptByCode.get(code) ? { department: deptByCode.get(code) } : {}),
+        ...(schedule.credits ? { credits: schedule.credits } : {}),
+        ...(schedule.description ? { description: schedule.description } : {}),
+        ...(schedule.syllabusUrl ? { syllabusUrl: schedule.syllabusUrl } : {}),
       });
     }
   }
@@ -58,7 +67,7 @@ async function main() {
 
   writeFileSync(SEED_PATH, `${JSON.stringify(seed, null, 2)}\n`);
   console.log(
-    `Wrote ${courses.length} courses and ${seed.totalSchedules} schedules for ${snapshot.latestYear} (FireFly ${snapshot.yearLabel})`
+    `Wrote ${courses.length} courses and ${seed.totalSchedules} schedules (${snapshot.detailsCount} detail pages) for ${snapshot.latestYear} (FireFly ${snapshot.yearLabel})`
   );
 }
 

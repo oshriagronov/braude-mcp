@@ -189,3 +189,25 @@ export async function openLatestYearSession(
 
   return { jar, year };
 }
+
+/** Opens a latest-year session, retrying when FireFly returns a temporary rate limit. */
+export async function openLatestYearSessionWithRetry(
+  timeoutMs: number = 8000,
+  preferredYear?: string,
+  attempts: number = 4
+): Promise<FireflySession> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await openLatestYearSession(timeoutMs, preferredYear);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('rate-limited') || attempt === attempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 4000));
+    }
+  }
+  throw lastError;
+}

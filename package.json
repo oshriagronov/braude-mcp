@@ -10,6 +10,7 @@
     "deploy": "wrangler deploy",
     "sync": "vitest run -t \"syncs catalog and calendar\"",
     "refresh-seed": "vite-node scripts/refresh-seed.ts",
+    "enrich-seed": "vite-node scripts/enrich-seed-details.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

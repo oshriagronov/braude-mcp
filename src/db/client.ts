@@ -17,6 +17,33 @@ export function isPlaceholderSchedule(groups: CourseGroup[] | undefined): boolea
   return groups.every((g) => PLACEHOLDER_INSTRUCTORS.has((g.instructor || '').trim()));
 }
 
+function seedCourses(): CourseSummary[] {
+  return (dbSeedData.courses || []) as CourseSummary[];
+}
+
+function seedSchedules(): Record<string, CourseScheduleDetail> {
+  return (dbSeedData.schedules || {}) as Record<string, CourseScheduleDetail>;
+}
+
+function overlaySeedMetadata<T extends { courseCode?: string; credits?: number; description?: string; syllabusUrl?: string; prerequisites?: string[] }>(
+  row: T
+): T {
+  const code = row.courseCode;
+  if (!code) return row;
+  const seedCourse = seedCourses().find((c) => c.courseCode === code);
+  const seedSchedule = seedSchedules()[code];
+  return {
+    ...row,
+    credits: row.credits || seedCourse?.credits || seedSchedule?.credits || row.credits,
+    description: row.description || seedCourse?.description || seedSchedule?.description,
+    syllabusUrl: row.syllabusUrl || seedCourse?.syllabusUrl || seedSchedule?.syllabusUrl,
+    prerequisites:
+      row.prerequisites && row.prerequisites.length > 0
+        ? row.prerequisites
+        : seedCourse?.prerequisites || seedSchedule?.prerequisites || row.prerequisites,
+  };
+}
+
 export interface D1PreparedStatement {
   bind(...values: any[]): D1PreparedStatement;
   all<T = any>(): Promise<{ results: T[]; success: boolean }>;
@@ -99,7 +126,8 @@ export async function searchCoursesInDb(
   if (db) {
     try {
       let sql = `
-        SELECT course_code as courseCode, course_name as courseName, department, credits
+        SELECT course_code as courseCode, course_name as courseName, department, credits,
+               description, syllabus_url as syllabusUrl
         FROM courses
         WHERE (course_code LIKE ? OR course_name LIKE ? OR department LIKE ?)
       `;
@@ -116,7 +144,7 @@ export async function searchCoursesInDb(
       const { results } = await stmt.all<CourseSummary>();
 
       if (results && results.length > 0) {
-        return results;
+        return results.map((row) => overlaySeedMetadata(row));
       }
     } catch {
       // Fall through to in-memory store if D1 query fails
@@ -142,7 +170,7 @@ export async function getCourseScheduleFromDb(
     try {
       const courseRow = await db
         .prepare(
-          `SELECT course_code as courseCode, course_name as courseName, department, credits, description, syllabus_url as syllabusUrl
+          `SELECT course_code as courseCode, course_name as courseName, department, credits, description, syllabus_url as syllabusUrl, prerequisites
            FROM courses WHERE course_code = ?`
         )
         .bind(cleanCode)
@@ -158,18 +186,30 @@ export async function getCourseScheduleFromDb(
           .bind(cleanCode)
           .all<CourseGroup>();
 
-        return {
+        let prerequisites: string[] = [];
+        if (typeof courseRow.prerequisites === 'string' && courseRow.prerequisites.trim()) {
+          try {
+            const parsed = JSON.parse(courseRow.prerequisites);
+            if (Array.isArray(parsed)) {
+              prerequisites = parsed.filter((p: unknown) => typeof p === 'string');
+            }
+          } catch {
+            prerequisites = [];
+          }
+        }
+
+        return overlaySeedMetadata({
           courseCode: courseRow.courseCode,
           courseName: courseRow.courseName,
-          credits: courseRow.credits || 3.0,
-          description: courseRow.description,
-          syllabusUrl: courseRow.syllabusUrl,
-          prerequisites: [],
+          credits: typeof courseRow.credits === 'number' ? courseRow.credits : 0,
+          description: courseRow.description || undefined,
+          syllabusUrl: courseRow.syllabusUrl || undefined,
+          prerequisites,
           groups: isPlaceholderSchedule(groupRows as CourseGroup[])
             ? []
             : ((groupRows || []) as CourseGroup[]),
           fetchedAt: new Date().toISOString(),
-        };
+        });
       }
     } catch {
       // Fall through to in-memory store if D1 query fails
@@ -194,11 +234,11 @@ export async function getCourseScheduleFromDb(
     courseCode: foundCourse.courseCode,
     courseName: foundCourse.courseName,
     credits: foundCourse.credits || 0,
-    description: foundCourse.courseName
-      ? `קורס ${foundCourse.courseName} (קוד ${foundCourse.courseCode})${foundCourse.department ? ` במחלקת ${foundCourse.department}` : ''}.`
-      : undefined,
-    syllabusUrl: `https://info.braude.ac.il/info/${new Date().getFullYear()}/${cleanCode.padStart(7, '0')}.pdf`,
-    prerequisites: [],
+    ...(foundCourse.description ? { description: foundCourse.description } : {}),
+    ...(foundCourse.syllabusUrl ? { syllabusUrl: foundCourse.syllabusUrl } : {}),
+    ...(foundCourse.prerequisites && foundCourse.prerequisites.length > 0
+      ? { prerequisites: foundCourse.prerequisites }
+      : {}),
     groups: [],
     fetchedAt: new Date().toISOString(),
   };
@@ -371,14 +411,26 @@ export async function syncDatabaseFromScrape(
     }
   }
 
+  try {
+    await db.prepare('ALTER TABLE courses ADD COLUMN prerequisites TEXT').run();
+  } catch {
+    // Column already exists
+  }
+
   if (data.courses && data.courses.length > 0) {
+    const schedules = data.schedules || {};
     const courseStatements: D1PreparedStatement[] = [];
     for (const c of data.courses) {
+      const schedule = schedules[c.courseCode];
+      const description = c.description || schedule?.description || null;
+      const syllabusUrl = c.syllabusUrl || schedule?.syllabusUrl || null;
+      const credits = c.credits ?? schedule?.credits ?? null;
+      const prerequisites = c.prerequisites || schedule?.prerequisites || [];
       courseStatements.push(
         db
           .prepare(
-            `INSERT INTO courses (course_code, course_name, department, credits, is_taught, description, syllabus_url, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO courses (course_code, course_name, department, credits, is_taught, description, syllabus_url, prerequisites, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(course_code) DO UPDATE SET
                course_name = excluded.course_name,
                department = excluded.department,
@@ -386,16 +438,18 @@ export async function syncDatabaseFromScrape(
                is_taught = excluded.is_taught,
                description = excluded.description,
                syllabus_url = excluded.syllabus_url,
+               prerequisites = excluded.prerequisites,
                updated_at = excluded.updated_at`
           )
           .bind(
             c.courseCode,
             c.courseName,
             c.department || null,
-            c.credits ?? null,
+            credits,
             'נלמד',
-            `קורס ${c.courseName} (קוד ${c.courseCode})${c.department ? ` במחלקת ${c.department}` : ''}.`,
-            `https://info.braude.ac.il/info/${new Date().getFullYear()}/${c.courseCode.padStart(7, '0')}.pdf`,
+            description,
+            syllabusUrl,
+            prerequisites.length > 0 ? JSON.stringify(prerequisites) : null,
             now
           )
       );

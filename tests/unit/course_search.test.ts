@@ -4,6 +4,8 @@ import {
   parseCourseScheduleHtml,
   parseTimetableHtml,
   parseHebrewDay,
+  parseAcademicCredits,
+  parseSyllabusDescription,
   searchCourses,
   getCourseSchedule,
   classifyGroupType,
@@ -129,6 +131,22 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       expect(classifyGroupType('תרגיל')).toBe('recitation');
       expect(classifyGroupType('מעבדה')).toBe('lab');
       expect(classifyGroupType('סמינר')).toBe('other');
+    });
+  });
+
+  describe('parseAcademicCredits and syllabus', () => {
+    it('parses hours–credits form used on FireFly pages (3 – 3 נ"ז)', () => {
+      expect(parseAcademicCredits('פרשיית לימוד 62005 סמינר בהתאמת תבניות 3 – 3 נ"ז התאמת תבניות')).toBe(3);
+      expect(parseAcademicCredits('נקודות זכות: 3.5')).toBe(3.5);
+      expect(parseAcademicCredits('4.0 נ"ז')).toBe(4);
+    });
+
+    it('extracts פרשיית לימוד body after the credits marker', () => {
+      const text =
+        'פרשיית לימוד 62005 סמינר בהתאמת תבניות 3 – 3 נ"ז התאמת תבניות רגילה: בהינתן טקסט T. כדי לפתוח את התיבה';
+      const description = parseSyllabusDescription(text, '62005');
+      expect(description).toContain('התאמת תבניות רגילה');
+      expect(description).not.toContain('כדי לפתוח');
     });
   });
 
@@ -386,6 +404,7 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       const html = `
         <html lang="he" dir="rtl"><body>
           <div>קורס סמינר בהתאמת תבניות שנה"ל תשפ"ז</div>
+          <div>פרשיית לימוד 62005 סמינר בהתאמת תבניות 3 – 3 נ"ז התאמת תבניות רגילה: בהינתן טקסט T באורך n.</div>
           <div class="col">
             <div class="TextAlignRight">
               קורס מסוג הרצאה
@@ -421,6 +440,8 @@ describe('Course Search & Schedule Scraper Unit Tests (src/scrapers/course_searc
       expect(detail.groups[0].startTime).toBe('12:50');
       expect(detail.groups[0].endTime).toBe('15:50');
       expect(detail.groups[0].location).toBe('309 M');
+      expect(detail.credits).toBe(3);
+      expect(detail.description).toContain('התאמת תבניות רגילה');
     });
 
     it('correctly extracts course title from FireFly "קורס ... שנה\\"ל" header format', () => {

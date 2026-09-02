@@ -1,17 +1,24 @@
 import { fetchAcademicCalendar } from './calendar.js';
 import {
   academicYearRange,
+  enrichWithCourseDetails,
   fetchAllCoursesCatalog,
   fetchLatestTimetable,
 } from './course_search.js';
-import { fallbackAcademicYear, openLatestYearSession } from './firefly.js';
+import { fallbackAcademicYear, openLatestYearSessionWithRetry } from './firefly.js';
 import { syncDatabaseFromScrape, type D1Database } from '../db/client.js';
 import type { CourseScheduleDetail, CourseSummary } from '../types/index.js';
+
+export interface SyncOptions {
+  /** Fetch per-course credits, syllabus, and rooms. Off by default so /sync stays fast; use npm run enrich-seed. */
+  enrichDetails?: boolean;
+}
 
 export interface SyncResult {
   success: boolean;
   coursesCount: number;
   schedulesCount: number;
+  detailsCount: number;
   calendarSynced: boolean;
   latestYear: string;
   timestamp: string;
@@ -21,14 +28,18 @@ export interface SyncResult {
  * Scrapes the latest published Braude catalog + weekly timetable and persists
  * only real portal data. Academic year is read from the FireFly dropdown.
  */
-export async function scrapeLatestSnapshot(timeoutMs: number = 15000): Promise<{
+export async function scrapeLatestSnapshot(
+  timeoutMs: number = 15000,
+  options: SyncOptions = {}
+): Promise<{
   yearLabel: string;
   latestYear: string;
   courses: CourseSummary[];
   schedules: Record<string, CourseScheduleDetail>;
   calendar: Awaited<ReturnType<typeof fetchAcademicCalendar>>;
+  detailsCount: number;
 }> {
-  const session = await openLatestYearSession(timeoutMs);
+  const session = await openLatestYearSessionWithRetry(timeoutMs);
   const latestYear = academicYearRange(session.year);
   const calendarPromise = fetchAcademicCalendar(latestYear);
 
@@ -37,7 +48,6 @@ export async function scrapeLatestSnapshot(timeoutMs: number = 15000): Promise<{
   const schedules = await fetchLatestTimetable(session, Math.max(timeoutMs, 20000));
   const calendar = await calendarPromise;
 
-  // Attach catalog names onto timetable entries (and vice versa)
   for (const course of courses) {
     const schedule = schedules[course.courseCode];
     if (schedule && course.courseName) {
@@ -48,35 +58,47 @@ export async function scrapeLatestSnapshot(timeoutMs: number = 15000): Promise<{
     }
   }
 
+  let detailsCount = 0;
+  if (options.enrichDetails === true) {
+    const enriched = await enrichWithCourseDetails(session, courses, schedules, 8000);
+    detailsCount = enriched.detailsCount;
+  }
+
   return {
     yearLabel: session.year,
     latestYear,
     courses,
     schedules,
     calendar,
+    detailsCount,
   };
 }
 
 /**
  * Background synchronization routine executed by Cloudflare Cron Trigger (every 3 days)
  */
-export async function syncCatalogAndCalendar(db?: D1Database): Promise<SyncResult> {
+export async function syncCatalogAndCalendar(
+  db?: D1Database,
+  options: SyncOptions = {}
+): Promise<SyncResult> {
   console.log('[SYNC] Starting background sync for Ort Braude courses & calendar...');
 
   let coursesCount = 0;
   let schedulesCount = 0;
+  let detailsCount = 0;
   let calendarSynced = false;
   let latestYear = academicYearRange(fallbackAcademicYear());
 
   try {
-    const snapshot = await scrapeLatestSnapshot();
+    const snapshot = await scrapeLatestSnapshot(15000, options);
     latestYear = snapshot.latestYear;
     coursesCount = snapshot.courses.length;
     schedulesCount = Object.keys(snapshot.schedules).length;
+    detailsCount = snapshot.detailsCount;
     calendarSynced = !!snapshot.calendar;
 
     console.log(
-      `[SYNC] Latest academic year ${latestYear} (FireFly ${snapshot.yearLabel}): ${coursesCount} courses, ${schedulesCount} schedules`
+      `[SYNC] Latest academic year ${latestYear} (FireFly ${snapshot.yearLabel}): ${coursesCount} courses, ${schedulesCount} schedules, ${detailsCount} detail pages`
     );
 
     if (db && (snapshot.courses.length > 0 || Object.keys(snapshot.schedules).length > 0)) {
@@ -93,6 +115,7 @@ export async function syncCatalogAndCalendar(db?: D1Database): Promise<SyncResul
       success: true,
       coursesCount,
       schedulesCount,
+      detailsCount,
       calendarSynced,
       latestYear,
       timestamp: new Date().toISOString(),
@@ -103,6 +126,7 @@ export async function syncCatalogAndCalendar(db?: D1Database): Promise<SyncResul
       success: false,
       coursesCount,
       schedulesCount,
+      detailsCount,
       calendarSynced,
       latestYear,
       timestamp: new Date().toISOString(),

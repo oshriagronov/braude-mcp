@@ -7,7 +7,7 @@
 
 A remote, serverless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Ort Braude College of Engineering**, powered by a **pure edge database architecture** deployed on **Cloudflare Workers**.
 
-This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to instantly query academic calendar dates, search the entire 598+ college course catalog, and retrieve course schedules, lecture/lab groups, and classroom assignments in sub-millisecond response times directly from the database without live scraping on user requests.
+This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to query academic calendar dates, search the latest-year Braude course catalog, and retrieve **scraped** lecture/lab schedules (days, hours, instructors) from the database. User queries never scrape the college live; a background job refreshes the latest academic year from FireFly.
 
 ---
 
@@ -16,7 +16,7 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 > - **Robots.txt Compliance**: This server strictly respects and adheres to the `robots.txt` guidelines specified by `w3.braude.ac.il` and `info.braude.ac.il`.
 > - **No Private Data Access**: It does **NOT** access, scrape, or store any private student data, personal accounts, grades, or password-protected portals.
 > - **Zero-Load User Queries**: User queries hit the persistent database layer with **zero live scraping**, ensuring zero load on college servers during runtime.
-> - **Polite Background Refresh**: A background Cloudflare Worker Cron Trigger (`0 0 */3 * *`) runs once every 3 days to refresh the database.
+> - **Polite Background Refresh**: A Cloudflare Cron Trigger (`0 0 */3 * *`) and the `POST /sync` endpoint refresh the latest academic year from FireFly (session year-switch + weekly timetable). Schedules are scraped, never generated.
 
 ---
 
@@ -26,9 +26,9 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 
 | Tool Name | Description | Example Arguments |
 |---|---|---|
-| `get_academic_calendar` | Fetches academic calendar events, semester start/end dates, exam periods, registration dates, and holidays from the database. | `{ "year": "2025-2026" }` or `{}` (defaults to current year) |
-| `search_courses` | Searches the entire catalog of **598+ Braude courses** across all departments by keyword, code, or department name. | `{ "query": "אלגברה ליניארית" }` or `{ "query": "תוכנה", "department": "הנדסת תוכנה" }` |
-| `get_course_schedule` | Retrieves detailed schedule options for any course, including lecture/lab groups, days, times, instructors, and classrooms. | `{ "courseCode": "61101" }` or `{ "courseCode": "421315" }` |
+| `get_academic_calendar` | Fetches academic calendar events, semester start/end dates, exam periods, registration dates, and holidays from the database. | `{ "year": "2026-2027" }` or `{}` (defaults to current year) |
+| `search_courses` | Searches the **latest academic year** catalog (currently 571 taught courses) by keyword, code, or department name. | `{ "query": "אלגברה" }` or `{ "query": "תוכנה", "department": "הנדסת תוכנה" }` |
+| `get_course_schedule` | Retrieves scraped schedule slots, credits (נקודות זכות), syllabus / פרשיית לימוד, and instructors. Missing published hours return empty `groups`, never invented times. | `{ "courseCode": "61767" }` or `{ "courseCode": "62005" }` |
 
 ### Resources
 
@@ -125,6 +125,12 @@ for Gemini Spark go to "Connected Apps", scroll down to "Custome Apps" and click
    npm run deploy
    ```
 
+4. **Refresh D1 with the latest scraped timetable** (required after the first deploy, and whenever schedules look stale):
+   ```bash
+   curl -X POST https://braude-mcp.<your-subdomain>.workers.dev/sync
+   ```
+   Queries read D1 first, then the bundled seed. Until `/sync` runs, production D1 may still hold old data.
+
 ---
 
 ### 📦 Uploading the Project to GitHub
@@ -214,6 +220,16 @@ Run TypeScript typecheck:
 npm run typecheck
 ```
 
+Rebuild the bundled seed from the live FireFly latest year (catalog + weekly timetable):
+```bash
+npm run refresh-seed
+```
+
+Then scrape per-course credits (נקודות זכות), syllabus text, and PDF links (resumable):
+```bash
+npm run enrich-seed
+```
+
 ---
 
 ## 🏗️ Architecture
@@ -241,14 +257,16 @@ npm run typecheck
                                 v
                +----------------------------------+
                |    Universal Database Layer      |
-               |  - Zero Live Scraping on Queries |
-               |  - Cloudflare D1 / 598+ Courses  |
-               |  - Sub-millisecond Execution     |
+               |  - Zero live scraping on queries |
+               |  - Cloudflare D1 / seed fallback |
+               |  - Scraped latest-year timetable |
                +----------------------------------+
                                 ^
-                                | (Background Cron: 0 0 */3 * *)
+                                | (Cron 0 0 */3 * * and POST /sync)
                +----------------+----------------+
-               |       3-Day Background Sync     |
+               |  Background sync (latest year)  |
+               |  FireFly session POST year      |
+               |  switch + timetable + details   |
                +----------------+----------------+
                                 |
                +----------------+----------------+
