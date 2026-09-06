@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { searchCoursesInDb, getCourseScheduleFromDb, type D1Database } from '../../db/client.js';
+import {
+  searchCoursesInDb,
+  getCourseScheduleFromDb,
+  getCourseSyllabusFromDb,
+  type D1Database,
+} from '../../db/client.js';
 
 /**
  * Zod Schema for search_courses tool arguments
@@ -80,6 +85,53 @@ export async function handleSearchCourses(
 }
 
 /**
+ * Handler for get_course_syllabus MCP tool
+ */
+export async function handleGetCourseSyllabus(
+  args: Record<string, unknown>,
+  db?: D1Database
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError: boolean }> {
+  try {
+    const parseResult = getCourseScheduleSchema.safeParse(args);
+    if (!parseResult.success) {
+      const errorDetails = parseResult.error.errors.map((e) => e.message).join('; ');
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Invalid arguments for get_course_syllabus: ${errorDetails}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const { courseCode } = parseResult.data;
+    const syllabus = await getCourseSyllabusFromDb(courseCode, db);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(syllabus, null, 2),
+        },
+      ],
+      isError: false,
+    };
+  } catch (error: any) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error fetching course syllabus: ${error?.message || String(error)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+/**
  * Handler for get_course_schedule MCP tool
  */
 export async function handleGetCourseSchedule(
@@ -133,5 +185,6 @@ export function registerCourseTools() {
   return {
     search_courses: handleSearchCourses,
     get_course_schedule: handleGetCourseSchedule,
+    get_course_syllabus: handleGetCourseSyllabus,
   };
 }

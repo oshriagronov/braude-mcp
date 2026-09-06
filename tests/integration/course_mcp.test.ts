@@ -176,6 +176,43 @@ describe('Course Search & Schedule MCP Integration Suite (M3)', () => {
     });
   });
 
+  describe('Tool: get_course_syllabus', () => {
+    it('3.0 returns ingested syllabus PDF text without fetching the PDF', async () => {
+      const payload = {
+        jsonrpc: '2.0',
+        id: 410,
+        method: 'tools/call',
+        params: {
+          name: 'get_course_syllabus',
+          arguments: {
+            courseCode: '62005',
+          },
+        },
+      };
+
+      const res = await doFetch('/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as any;
+      expect(data.result.isError).toBe(false);
+      const syllabus = JSON.parse(data.result.content[0].text) as {
+        courseCode: string;
+        syllabusText?: string;
+        syllabus?: { attendance?: string; topics?: string };
+        groups?: unknown[];
+      };
+      expect(syllabus.courseCode).toBe('62005');
+      expect(syllabus.syllabusText).toBeTruthy();
+      expect(syllabus.syllabusText).toMatch(/נושאי הלימוד|הרכב הציון|מטרות הקורס/);
+      expect(syllabus.syllabus?.attendance).toMatch(/נוכחות|100%/);
+      expect(Array.isArray(syllabus.groups) && syllabus.groups.length > 0).toBe(true);
+    });
+  });
+
   describe('Sequential Multi-Tool Flow', () => {
     it('3.1 completes full student workflow: search_courses -> get_course_schedule', async () => {
       // Step 1: Search for course

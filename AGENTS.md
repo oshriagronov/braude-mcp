@@ -51,13 +51,14 @@ braude-mcp/
 │   │   ├── server.ts           # JSON-RPC 2.0 dispatcher (passes D1 into tool handlers)
 │   │   ├── tools/
 │   │   │   ├── calendar.ts     # get_academic_calendar
-│   │   │   └── course.ts       # search_courses & get_course_schedule
+│   │   │   └── course.ts       # search_courses, get_course_schedule, get_course_syllabus
 │   │   └── resources/
 │   │       └── calendar.ts     # braude://calendar/current
 │   ├── scrapers/
 │   │   ├── calendar.ts         # w3.braude.ac.il academic calendar
 │   │   ├── course_search.ts    # Catalog + S_YFineDate timetable parsers
 │   │   ├── firefly.ts          # Cookie session + POST "מעבר שנה" (year is never hardcoded)
+│   │   ├── syllabus_pdf.ts     # Fetch public syllabus PDFs and extract text
 │   │   └── sync.ts             # Cron / POST /sync: scrape latest year into D1
 │   ├── middleware/
 │   │   └── rate_limit.ts       # Sliding window IP rate limiter (60 req/min/IP)
@@ -90,7 +91,10 @@ braude-mcp/
    - **Output**: Array of course summary objects matching the query in the **latest academic year** catalog.
 3. **`get_course_schedule`** ([src/mcp/tools/course.ts](src/mcp/tools/course.ts))
    - **Input**: `{ courseCode: string }` (e.g. `{ "courseCode": "61767" }` or `"62005"`)
-   - **Output**: Scraped slots (lectures/labs, instructors, days, hours). Empty `groups` if the portal has not published hours — **never invented times**.
+   - **Output**: Site schedule (lectures/labs, instructors, days, hours, rooms, credits) plus ingested syllabus PDF (`syllabusText` and parsed `syllabus.attendance` / grading / topics). Empty `groups` if the portal has not published hours — **never invented times**.
+4. **`get_course_syllabus`** ([src/mcp/tools/course.ts](src/mcp/tools/course.ts))
+   - **Input**: `{ courseCode: string }` (e.g. `{ "courseCode": "61767" }`)
+   - **Output**: Full ingested syllabus PDF plus parsed sections for attendance (חובת נוכחות), grading, exam, topics, objectives, and the site schedule. Never fetches the PDF at query time.
 
 ### MCP Resources
 
@@ -108,7 +112,7 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
    - Cloudflare Workers are stateless and short-lived.
    - Do NOT introduce persistent filesystem operations, long-lived background timers (`setInterval`), or Node.js native binary dependencies (`fs`, `child_process`).
 2. **Universal Database Architecture (Zero Live Scraping on Queries)**:
-   - All MCP tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`) and resources (`braude://calendar/current`) **query Cloudflare D1 or the bundled seed (`src/data/db_seed.json`)**.
+   - All MCP tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`, `get_course_syllabus`) and resources (`braude://calendar/current`) **query Cloudflare D1 or the bundled seed (`src/data/db_seed.json`)**.
    - Pass `c.env.DB` through `handleMcpRequest` into the tool handlers. Do not call scrapers from tool handlers.
    - **No user query should ever make an outbound network call to Braude's servers during runtime.**
 3. **Serve only scraped course data**:
@@ -121,9 +125,11 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
    - GET query-string year filters (`R1C39=2027`) are **ignored** by FireFly. Session cookies + POST are required.
    - Implementation: [src/scrapers/firefly.ts](src/scrapers/firefly.ts).
 5. **Periodic Background Ingestion (Every 3 Days)**:
-   - Cron (`0 0 */3 * *`) and `POST /sync` run [src/scrapers/sync.ts](src/scrapers/sync.ts): year switch, latest-year catalog (`S_LOOK_FOR_NOSE_AB`), weekly timetable (`S_YFineDate`), per-course detail pages (credits, syllabus, rooms), calendar, persist to D1.
+   - Cron (`0 0 */3 * *`) and `POST /sync` run [src/scrapers/sync.ts](src/scrapers/sync.ts): year switch, latest-year catalog (`S_LOOK_FOR_NOSE_AB`), weekly timetable (`S_YFineDate`), **full public syllabus PDFs**, calendar, persist to D1.
+   - Syllabus PDFs are fetched from `https://info.braude.ac.il/info/{year}/{paddedCode}.pdf`, extracted in full to `syllabus_text`, and upserted into D1 during the same 3-day job as the catalog. Existing D1 PDF text is overlaid before replaceAll so a timeout cannot wipe syllabi.
    - After deploy, the owner triggers `POST /sync` with `Authorization: Bearer $SYNC_SECRET` (`wrangler secret put SYNC_SECRET`). Never ship an open `/sync`.
-   - Rebuild timetable seed with `npm run refresh-seed`. Then `npm run enrich-seed` to scrape per-course credits (נקודות זכות), פרשיית לימוד, and syllabus PDFs (resumable; skips courses that already have them).
+   - Rebuild timetable seed with `npm run refresh-seed`. Then `npm run enrich-seed` to scrape per-course credits (נקודות זכות), פרשיית לימוד, and syllabus PDF text (resumable locally).
+   - MCP tools must not fetch PDFs at query time — they only read D1 / seed.
 6. **Robots.txt & Public Access Only**:
    - Background scrapers MUST only access public URLs on `w3.braude.ac.il` and `info.braude.ac.il`.
    - Never attempt to bypass logins, scrape authenticated student portals, or access private data.

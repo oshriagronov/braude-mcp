@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   searchCoursesInDb,
   getCourseScheduleFromDb,
+  getCourseSyllabusFromDb,
   getAcademicCalendarFromDb,
-  filterCourseList,
   normalizeHebrewText,
+  applyStoredSyllabi,
 } from '../../src/db/client.js';
+import type { CourseScheduleDetail, CourseSummary } from '../../src/types/index.js';
 
 describe('Database & Catalog Unit Tests', () => {
   describe('Hebrew Text Normalization', () => {
@@ -100,6 +102,57 @@ describe('Database & Catalog Unit Tests', () => {
       expect(schedule.credits).toBeGreaterThan(0);
       expect(schedule.syllabusUrl).toMatch(/info\.braude\.ac\.il\/info\/\d{4}\/0062005\.pdf/);
       expect(schedule.description).toBeTruthy();
+      expect(schedule.syllabusText).toBeTruthy();
+      expect(schedule.syllabusText).toMatch(/נושאי הלימוד|הרכב הציון|מטרות הקורס/);
+    });
+
+    it('overlays stored D1 syllabus PDFs onto a fresh catalog scrape so replaceAll cannot wipe them', () => {
+      const courses: CourseSummary[] = [
+        { courseCode: '62005', courseName: 'סמינר בהתאמת תבניות' },
+      ];
+      const schedules: Record<string, CourseScheduleDetail> = {
+        '62005': {
+          courseCode: '62005',
+          courseName: 'סמינר בהתאמת תבניות',
+          credits: 3,
+          groups: [],
+          fetchedAt: new Date().toISOString(),
+        },
+      };
+      const stored = new Map([
+        [
+          '62005',
+          {
+            syllabusUrl: 'https://info.braude.ac.il/info/2027/0062005.pdf',
+            syllabusText: 'נושאי הלימוד: KMP. הרכב הציון: 80% הרצאה.',
+          },
+        ],
+      ]);
+      applyStoredSyllabi(courses, schedules, stored);
+      expect(courses[0].syllabusText).toContain('נושאי הלימוד');
+      expect(courses[0].syllabusUrl).toMatch(/0062005\.pdf/);
+      expect(schedules['62005'].syllabusText).toBe(courses[0].syllabusText);
+    });
+
+    it('returns ingested syllabus PDF content for getCourseSyllabusFromDb', async () => {
+      const syllabus = await getCourseSyllabusFromDb('62005');
+      expect(syllabus.courseCode).toBe('62005');
+      expect(syllabus.syllabusText).toMatch(/נושאי הלימוד|KMP|הרכב הציון|מטרות הקורס/);
+      expect(syllabus.syllabus?.attendance).toMatch(/חובת נוכחות|100%/);
+      expect(syllabus.syllabus?.topics).toMatch(/KMP|Suffix/);
+      expect(syllabus.groups?.length).toBeGreaterThan(0);
+    });
+
+    it('exposes attendance policy on get_course_schedule from the ingested PDF', async () => {
+      const schedule = await getCourseScheduleFromDb('62005');
+      expect(schedule.syllabus?.attendance).toMatch(/נוכחות/);
+      expect(schedule.department).toContain('תוכנה');
+    });
+
+    it('does not include full syllabus PDF text in search_courses results', async () => {
+      const results = await searchCoursesInDb('62005');
+      expect(results).toHaveLength(1);
+      expect(results[0].syllabusText).toBeUndefined();
     });
 
     it('throws descriptive error for invalid course codes', async () => {
@@ -138,7 +191,10 @@ describe('Database & Catalog Unit Tests', () => {
 
     it('syncs catalog and calendar targeting the latest academic year', async () => {
       const { syncCatalogAndCalendar } = await import('../../src/scrapers/sync.js');
-      const result = await syncCatalogAndCalendar(undefined, { enrichDetails: false });
+      const result = await syncCatalogAndCalendar(undefined, {
+        enrichDetails: false,
+        ingestPdfs: false,
+      });
       if (!result.success) {
         // FireFly may rate-limit during development; the seed still serves queries.
         expect(result.latestYear).toMatch(/^\d{4}-\d{4}$/);

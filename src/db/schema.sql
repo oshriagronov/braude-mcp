@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS courses (
   is_taught TEXT,
   description TEXT,
   syllabus_url TEXT,
+  syllabus_text TEXT,
   prerequisites TEXT,
   updated_at TEXT NOT NULL
 );

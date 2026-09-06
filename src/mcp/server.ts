@@ -6,7 +6,7 @@ import type {
 } from '../types/index.js';
 import type { D1Database } from '../db/client.js';
 import { handleGetAcademicCalendar } from './tools/calendar.js';
-import { handleSearchCourses, handleGetCourseSchedule } from './tools/course.js';
+import { handleSearchCourses, handleGetCourseSchedule, handleGetCourseSyllabus } from './tools/course.js';
 import { handleReadCurrentCalendar } from './resources/calendar.js';
 
 export const TOOL_DEFINITIONS: McpToolDefinition[] = [
@@ -27,7 +27,7 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: 'search_courses',
     description:
-      'Searches for courses in Braude public schedule system by keyword, course code, or department name.',
+      'Searches for courses in the Braude catalog by keyword, course code, or department. Returns names and codes only. For attendance (חובת נוכחות), exams, grading, topics, or weekly hours, call get_course_syllabus or get_course_schedule with the courseCode.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -46,7 +46,22 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: 'get_course_schedule',
     description:
-      'Retrieves scraped schedule info for a course: lectures/labs, instructors, days, hours, credits (נקודות זכות), and syllabus / פרשיית לימוד.',
+      'Comprehensive course record from the database (never live scrape): weekly lecture/lab/recitation slots, instructors, rooms, credits, prerequisites, FireFly description, and the ingested syllabus PDF. The syllabus.attendance field answers whether students must attend classes (חובת נוכחות). Also includes grading, exam, topics, and objectives parsed from the PDF. Do not fetch syllabusUrl.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        courseCode: {
+          type: 'string',
+          description: 'Unique course code (e.g., "61767" or "62005")',
+        },
+      },
+      required: ['courseCode'],
+    },
+  },
+  {
+    name: 'get_course_syllabus',
+    description:
+      'Use this to answer whether attendance is required (חובת נוכחות / נוכחות חובה), exam and grading rules (הרכב הציון), topics (נושאי הלימוד), objectives, AI policy, and other syllabus rules. Returns the full ingested PDF text plus parsed sections (attendance, grading, exam, topics) and the site schedule/credits/prerequisites. Do not download the PDF.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -167,6 +182,11 @@ export async function handleMcpRequest(
 
       if (toolName === 'get_course_schedule') {
         const result = await handleGetCourseSchedule(toolArgs, db);
+        return createJsonRpcSuccess(id, result);
+      }
+
+      if (toolName === 'get_course_syllabus') {
+        const result = await handleGetCourseSyllabus(toolArgs, db);
         return createJsonRpcSuccess(id, result);
       }
 

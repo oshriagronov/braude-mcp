@@ -7,7 +7,7 @@
 
 A remote, serverless [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Ort Braude College of Engineering**, powered by a **pure edge database architecture** deployed on **Cloudflare Workers**.
 
-This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to query academic calendar dates, search the latest-year Braude course catalog, and retrieve **scraped** lecture/lab schedules (days, hours, instructors) from the database. User queries never scrape the college live; a background job refreshes the latest academic year from FireFly.
+This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemini Spark, or custom LLM agents) to query academic calendar dates, search the latest-year Braude course catalog, retrieve **scraped** lecture/lab schedules, and read **ingested syllabus PDF text** (topics, exams, grading) from the database. User queries never scrape the college live; a background job every 3 days refreshes the catalog, timetable, calendar, and syllabus PDFs into D1.
 
 ---
 
@@ -16,7 +16,7 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 > - **Robots.txt Compliance**: This server strictly respects and adheres to the `robots.txt` guidelines specified by `w3.braude.ac.il` and `info.braude.ac.il`.
 > - **No Private Data Access**: It does **NOT** access, scrape, or store any private student data, personal accounts, grades, or password-protected portals.
 > - **Zero-Load User Queries**: User queries hit the persistent database layer with **zero live scraping**, ensuring zero load on college servers during runtime.
-> - **Polite Background Refresh**: A Cloudflare Cron Trigger (`0 0 */3 * *`) and the `POST /sync` endpoint refresh the latest academic year from FireFly (session year-switch + weekly timetable). Schedules are scraped, never generated.
+> - **Polite Background Refresh**: A Cloudflare Cron Trigger (`0 0 */3 * *`) and the `POST /sync` endpoint refresh the latest academic year from FireFly (catalog, weekly timetable, and every public syllabus PDF) into D1. MCP queries only read that database.
 
 ---
 
@@ -28,7 +28,8 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 |---|---|---|
 | `get_academic_calendar` | Fetches academic calendar events, semester start/end dates, exam periods, registration dates, and holidays from the database. | `{ "year": "2026-2027" }` or `{}` (defaults to current year) |
 | `search_courses` | Searches the **latest academic year** catalog (currently 571 taught courses) by keyword, code, or department name. | `{ "query": "אלגברה" }` or `{ "query": "תוכנה", "department": "הנדסת תוכנה" }` |
-| `get_course_schedule` | Retrieves scraped schedule slots, credits (נקודות זכות), syllabus / פרשיית לימוד, and instructors. Missing published hours return empty `groups`, never invented times. | `{ "courseCode": "61767" }` or `{ "courseCode": "62005" }` |
+| `get_course_schedule` | Comprehensive course record from the database: weekly slots, instructors, rooms, credits, and ingested syllabus PDF (attendance / חובת נוכחות, grading, exam, topics). | `{ "courseCode": "61767" }` or `{ "courseCode": "62005" }` |
+| `get_course_syllabus` | Full ingested syllabus plus parsed sections: whether attendance is required, grading/exam rules, topics, objectives, AI policy, and the site schedule. Do not fetch the PDF URL. | `{ "courseCode": "61767" }` |
 
 ### Resources
 
@@ -39,6 +40,8 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 ---
 
 ## 🔌 Client Connection Guide
+
+Updating an existing app or AI agent for the new syllabus/attendance tools: give it [AI_CLIENT_UPDATE.md](./AI_CLIENT_UPDATE.md).
 
 Replace `https://braude-mcp.<your-subdomain>.workers.dev/mcp` with your deployed Cloudflare Worker URL (or `http://127.0.0.1:8787/mcp` if running locally).
 
@@ -235,10 +238,14 @@ Rebuild the bundled seed from the live FireFly latest year (catalog + weekly tim
 npm run refresh-seed
 ```
 
-Then scrape per-course credits (נקודות זכות), syllabus text, and PDF links (resumable):
+Then scrape per-course credits (נקודות זכות), פרשיית לימוד, and ingest syllabus PDF text (resumable):
 ```bash
 npm run enrich-seed
+# PDF text only (skips FireFly detail pages):
+npm run enrich-seed -- --pdfs-only
 ```
+
+Production D1 is filled by the same 3-day job as the catalog (`cron 0 0 */3 * *` or authenticated `POST /sync`): courses, schedules, calendar, and full syllabus PDF text. Every MCP query reads D1 (or the bundled seed fallback) and never fetches Braude URLs.
 
 ---
 

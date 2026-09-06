@@ -6,12 +6,24 @@ import {
   fetchLatestTimetable,
 } from './course_search.js';
 import { fallbackAcademicYear, openLatestYearSessionWithRetry } from './firefly.js';
-import { syncDatabaseFromScrape, type D1Database } from '../db/client.js';
+import { ingestSyllabusPdfs } from './syllabus_pdf.js';
+import {
+  applyStoredSyllabi,
+  loadCourseSyllabiFromDb,
+  syncDatabaseFromScrape,
+  upsertCourseSyllabi,
+  type D1Database,
+} from '../db/client.js';
 import type { CourseScheduleDetail, CourseSummary } from '../types/index.js';
 
 export interface SyncOptions {
-  /** Fetch per-course credits, syllabus, and rooms. Off by default so /sync stays fast; use npm run enrich-seed. */
+  /** Fetch per-course FireFly HTML details (credits, rooms). Off by default so /sync stays within Worker limits. */
   enrichDetails?: boolean;
+  /**
+   * Fetch every public syllabus PDF into D1. Defaults to true when a D1 binding is
+   * passed (cron / POST /sync). Tests without DB skip live PDF downloads.
+   */
+  ingestPdfs?: boolean;
 }
 
 export interface SyncResult {
@@ -19,14 +31,16 @@ export interface SyncResult {
   coursesCount: number;
   schedulesCount: number;
   detailsCount: number;
+  pdfsIngested: number;
   calendarSynced: boolean;
   latestYear: string;
   timestamp: string;
 }
 
 /**
- * Scrapes the latest published Braude catalog + weekly timetable and persists
- * only real portal data. Academic year is read from the FireFly dropdown.
+ * Scrapes the latest published Braude catalog + weekly timetable.
+ * Academic year is read from the FireFly dropdown. PDF ingest happens in
+ * syncCatalogAndCalendar so D1 can overlay and persist incrementally.
  */
 export async function scrapeLatestSnapshot(
   timeoutMs: number = 15000,
@@ -75,19 +89,22 @@ export async function scrapeLatestSnapshot(
 }
 
 /**
- * Background synchronization routine executed by Cloudflare Cron Trigger (every 3 days)
+ * Background synchronization: catalog, timetable, calendar, and full syllabus PDFs
+ * into D1. Cron (every 3 days) and POST /sync. MCP queries never scrape.
  */
 export async function syncCatalogAndCalendar(
   db?: D1Database,
   options: SyncOptions = {}
 ): Promise<SyncResult> {
-  console.log('[SYNC] Starting background sync for Ort Braude courses & calendar...');
+  console.log('[SYNC] Starting background sync for Ort Braude courses, calendar, and syllabus PDFs...');
 
   let coursesCount = 0;
   let schedulesCount = 0;
   let detailsCount = 0;
+  let pdfsIngested = 0;
   let calendarSynced = false;
   let latestYear = academicYearRange(fallbackAcademicYear());
+  const ingestPdfs = options.ingestPdfs ?? Boolean(db);
 
   try {
     const snapshot = await scrapeLatestSnapshot(15000, options);
@@ -97,9 +114,12 @@ export async function syncCatalogAndCalendar(
     detailsCount = snapshot.detailsCount;
     calendarSynced = !!snapshot.calendar;
 
-    console.log(
-      `[SYNC] Latest academic year ${latestYear} (FireFly ${snapshot.yearLabel}): ${coursesCount} courses, ${schedulesCount} schedules, ${detailsCount} detail pages`
-    );
+    if (db) {
+      const stored = await loadCourseSyllabiFromDb(db);
+      applyStoredSyllabi(snapshot.courses, snapshot.schedules, stored);
+    } else {
+      applyStoredSyllabi(snapshot.courses, snapshot.schedules, new Map());
+    }
 
     if (db && (snapshot.courses.length > 0 || Object.keys(snapshot.schedules).length > 0)) {
       await syncDatabaseFromScrape(db, {
@@ -108,14 +128,36 @@ export async function syncCatalogAndCalendar(
         schedules: snapshot.schedules,
         replaceAll: true,
       });
-      console.log('[SYNC] Successfully persisted scraped data into Cloudflare D1.');
+      console.log('[SYNC] Persisted catalog and timetable into Cloudflare D1.');
     }
+
+    if (ingestPdfs) {
+      const pdfs = await ingestSyllabusPdfs(snapshot.courses, snapshot.schedules, snapshot.yearLabel, {
+        timeoutMs: 8000,
+        refreshExisting: true,
+        onProgress: db
+          ? async () => {
+              await upsertCourseSyllabi(db, snapshot.courses);
+            }
+          : undefined,
+      });
+      pdfsIngested = pdfs.pdfsIngested;
+
+      if (db && pdfsIngested > 0) {
+        await upsertCourseSyllabi(db, snapshot.courses);
+      }
+    }
+
+    console.log(
+      `[SYNC] Latest academic year ${latestYear} (FireFly ${snapshot.yearLabel}): ${coursesCount} courses, ${schedulesCount} schedules, ${detailsCount} detail pages, ${pdfsIngested} syllabus PDFs`
+    );
 
     return {
       success: true,
       coursesCount,
       schedulesCount,
       detailsCount,
+      pdfsIngested,
       calendarSynced,
       latestYear,
       timestamp: new Date().toISOString(),
@@ -127,6 +169,7 @@ export async function syncCatalogAndCalendar(
       coursesCount,
       schedulesCount,
       detailsCount,
+      pdfsIngested,
       calendarSynced,
       latestYear,
       timestamp: new Date().toISOString(),

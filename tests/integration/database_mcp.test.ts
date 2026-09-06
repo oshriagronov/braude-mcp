@@ -73,6 +73,37 @@ describe('MCP Pure Database Query Integration Tests', () => {
     fetchSpy.mockRestore();
   });
 
+  it('serves get_course_syllabus from ingested PDF text with zero network calls', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const req = new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'req-syllabus-db-1',
+        method: 'tools/call',
+        params: {
+          name: 'get_course_syllabus',
+          arguments: { courseCode: '62005' },
+        },
+      }),
+    });
+
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as any;
+    expect(json.result.isError).toBe(false);
+    const syllabus = JSON.parse(json.result.content[0].text);
+    expect(syllabus.courseCode).toBe('62005');
+    expect(syllabus.syllabusText).toMatch(/נושאי הלימוד|הרכב הציון|מטרות הקורס/);
+    expect(syllabus.syllabus?.attendance).toMatch(/נוכחות/);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
   it('serves get_academic_calendar directly from database with zero network calls', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 

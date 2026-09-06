@@ -91,6 +91,7 @@ describe('Braude MCP Remote HTTP POST /mcp E2E 4-Tier Test Suite', () => {
       expect(toolNames).toContain('get_academic_calendar');
       expect(toolNames).toContain('search_courses');
       expect(toolNames).toContain('get_course_schedule');
+      expect(toolNames).toContain('get_course_syllabus');
     });
 
     it('1.4 POST /mcp resources/list returns resources list', async () => {

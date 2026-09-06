@@ -22,10 +22,15 @@ async function main() {
     }
   }
 
+  const previousByCode = new Map(
+    (previous.courses || []).map((course) => [course.courseCode, course])
+  );
+
   const snapshot = await scrapeLatestSnapshot(20000);
 
   const courses: CourseSummary[] = snapshot.courses.map((course) => {
     const schedule = snapshot.schedules[course.courseCode];
+    const prev = previousByCode.get(course.courseCode);
     return {
       ...course,
       ...(deptByCode.get(course.courseCode) && !course.department
@@ -34,11 +39,19 @@ async function main() {
       ...(schedule?.credits && !course.credits ? { credits: schedule.credits } : {}),
       ...(schedule?.description && !course.description ? { description: schedule.description } : {}),
       ...(schedule?.syllabusUrl && !course.syllabusUrl ? { syllabusUrl: schedule.syllabusUrl } : {}),
+      ...(schedule?.syllabusText && !course.syllabusText ? { syllabusText: schedule.syllabusText } : {}),
+      ...(prev?.syllabusText && !course.syllabusText && !schedule?.syllabusText
+        ? { syllabusText: prev.syllabusText }
+        : {}),
+      ...(prev?.syllabusUrl && !course.syllabusUrl && !schedule?.syllabusUrl
+        ? { syllabusUrl: prev.syllabusUrl }
+        : {}),
     };
   });
 
   for (const [code, schedule] of Object.entries(snapshot.schedules)) {
     if (!courses.some((c) => c.courseCode === code)) {
+      const prev = previousByCode.get(code);
       courses.push({
         courseCode: code,
         courseName: schedule.courseName,
@@ -46,8 +59,19 @@ async function main() {
         ...(schedule.credits ? { credits: schedule.credits } : {}),
         ...(schedule.description ? { description: schedule.description } : {}),
         ...(schedule.syllabusUrl ? { syllabusUrl: schedule.syllabusUrl } : {}),
+        ...(schedule.syllabusText ? { syllabusText: schedule.syllabusText } : {}),
+        ...(prev?.syllabusText && !schedule.syllabusText ? { syllabusText: prev.syllabusText } : {}),
       });
     }
+  }
+
+  for (const [code, schedule] of Object.entries(snapshot.schedules)) {
+    const prev = previousByCode.get(code);
+    const course = courses.find((c) => c.courseCode === code);
+    if (!schedule.syllabusUrl) {
+      schedule.syllabusUrl = course?.syllabusUrl || prev?.syllabusUrl;
+    }
+    delete schedule.syllabusText;
   }
 
   courses.sort((a, b) => a.courseCode.localeCompare(b.courseCode, 'en'));

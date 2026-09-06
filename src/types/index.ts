@@ -47,6 +47,20 @@ export interface CourseGroup {
   location: string;
 }
 
+/** Parsed spans from the ingested syllabus PDF. Only populated from source text. */
+export interface SyllabusContent {
+  attendance?: string;
+  grading?: string;
+  exam?: string;
+  topics?: string;
+  objectives?: string;
+  learningOutcomes?: string;
+  requirements?: string;
+  teachingMethods?: string;
+  bibliography?: string;
+  aiPolicy?: string;
+}
+
 export interface CourseSummary {
   courseCode: string;
   courseName: string;
@@ -54,17 +68,37 @@ export interface CourseSummary {
   credits?: number;
   description?: string;
   syllabusUrl?: string;
+  /** Extracted text of the public syllabus PDF (topics, exam, grading, attendance). */
+  syllabusText?: string;
   prerequisites?: string[];
 }
 
 export interface CourseScheduleDetail {
   courseCode: string;
   courseName: string;
+  department?: string;
   credits: number;
   description?: string;
   syllabusUrl?: string;
+  /** Extracted text of the public syllabus PDF (topics, exam, grading, attendance). */
+  syllabusText?: string;
+  syllabus?: SyllabusContent;
   prerequisites?: string[];
   groups: CourseGroup[];
+  fetchedAt: string;
+}
+
+export interface CourseSyllabusDetail {
+  courseCode: string;
+  courseName: string;
+  department?: string;
+  credits: number;
+  description?: string;
+  syllabusUrl?: string;
+  syllabusText?: string;
+  syllabus?: SyllabusContent;
+  prerequisites?: string[];
+  groups?: CourseGroup[];
   fetchedAt: string;
 }
 
