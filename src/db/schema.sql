@@ -1,14 +1,25 @@
 -- D1 SQLite Schema for Braude MCP
 
--- 1. Academic Calendar Events
+-- 1. Academic Calendar Events (scraped; never hardcoded)
 CREATE TABLE IF NOT EXISTS academic_calendar (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   academic_year TEXT NOT NULL,
   event_name TEXT NOT NULL,
-  event_category TEXT NOT NULL, -- 'semester', 'exam', 'registration', 'holiday', 'other'
+  event_category TEXT NOT NULL, -- 'semester_start', 'exam_period', 'registration', 'holiday', 'other'
   start_date TEXT NOT NULL,
   end_date TEXT,
   description TEXT,
+  semester_group TEXT,
+  raw_date_str TEXT,
+  updated_at TEXT NOT NULL
+);
+
+-- Full scraped calendar JSON (one row). MCP reads this; scrape failure must not DELETE it.
+CREATE TABLE IF NOT EXISTS calendar_snapshot (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  source_url TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  payload TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 

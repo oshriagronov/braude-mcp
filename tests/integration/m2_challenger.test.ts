@@ -39,14 +39,14 @@ describe('M2 Adversarial Challenger Test Suite', () => {
       expect(parsed.years.length).toBeGreaterThan(0);
     });
 
-    it('1.2 Year filter "2025-2026" returns matched academic year', async () => {
+    it('1.2 Year filter "2026-2027" returns matched academic year', async () => {
       const res = await callMcp({
         jsonrpc: '2.0',
         id: 'test-1.2',
         method: 'tools/call',
         params: {
           name: 'get_academic_calendar',
-          arguments: { year: '2025-2026' },
+          arguments: { year: '2026-2027' },
         },
       });
 
@@ -54,18 +54,22 @@ describe('M2 Adversarial Challenger Test Suite', () => {
       const parsed: AcademicCalendarData = JSON.parse(res.result.content[0].text);
       expect(parsed.years.length).toBeGreaterThan(0);
       for (const yr of parsed.years) {
-        expect(yr.academicYear.includes('2025-2026') || yr.academicYear.includes('2026-2025') || yr.academicYear.includes('תשפ"ו')).toBe(true);
+        expect(
+          yr.academicYear.includes('2026-2027') ||
+            yr.academicYear.includes('2027-2026') ||
+            yr.academicYear.includes('תשפ"ז')
+        ).toBe(true);
       }
     });
 
-    it('1.3 Year filter "2024-2025" returns matched academic year', async () => {
+    it('1.3 Year filter "2027-2026" matches the reversed scraped year pair', async () => {
       const res = await callMcp({
         jsonrpc: '2.0',
         id: 'test-1.3',
         method: 'tools/call',
         params: {
           name: 'get_academic_calendar',
-          arguments: { year: '2024-2025' },
+          arguments: { year: '2027-2026' },
         },
       });
 
@@ -73,7 +77,11 @@ describe('M2 Adversarial Challenger Test Suite', () => {
       const parsed: AcademicCalendarData = JSON.parse(res.result.content[0].text);
       expect(parsed.years.length).toBeGreaterThan(0);
       for (const yr of parsed.years) {
-        expect(yr.academicYear.includes('2024-2025') || yr.academicYear.includes('2025-2024') || yr.academicYear.includes('תשפ"ה')).toBe(true);
+        expect(
+          yr.academicYear.includes('2026-2027') ||
+            yr.academicYear.includes('2027-2026') ||
+            yr.academicYear.includes('תשפ"ז')
+        ).toBe(true);
       }
     });
 
@@ -93,21 +101,21 @@ describe('M2 Adversarial Challenger Test Suite', () => {
       expect(parsed.years).toEqual([]);
     });
 
-    it('1.5 Hebrew year filter "תשפ\"ו" matches relevant year', async () => {
+    it('1.5 Hebrew year filter "תשפ\"ז" matches relevant year', async () => {
       const res = await callMcp({
         jsonrpc: '2.0',
         id: 'test-1.5',
         method: 'tools/call',
         params: {
           name: 'get_academic_calendar',
-          arguments: { year: 'תשפ"ו' },
+          arguments: { year: 'תשפ"ז' },
         },
       });
 
       expect(res.result.isError).toBe(false);
       const parsed: AcademicCalendarData = JSON.parse(res.result.content[0].text);
       expect(parsed.years.length).toBeGreaterThan(0);
-      expect(parsed.years[0].academicYear).toContain('תשפ"ו');
+      expect(parsed.years[0].academicYear).toContain('תשפ"ז');
     });
 
     it('1.6 Year filter with numeric argument { year: 2025 } converts gracefully', async () => {
@@ -117,7 +125,7 @@ describe('M2 Adversarial Challenger Test Suite', () => {
         method: 'tools/call',
         params: {
           name: 'get_academic_calendar',
-          arguments: { year: 2025 },
+          arguments: { year: 2026 },
         },
       });
 
@@ -126,14 +134,14 @@ describe('M2 Adversarial Challenger Test Suite', () => {
       expect(parsed.years.length).toBeGreaterThan(0);
     });
 
-    it('1.7 Year filter with leading/trailing spaces "  2025-2026  " works', async () => {
+    it('1.7 Year filter with leading/trailing spaces "  2026-2027  " works', async () => {
       const res = await callMcp({
         jsonrpc: '2.0',
         id: 'test-1.7',
         method: 'tools/call',
         params: {
           name: 'get_academic_calendar',
-          arguments: { year: '  2025-2026  ' },
+          arguments: { year: '  2026-2027  ' },
         },
       });
 

@@ -12,6 +12,7 @@ This guide is designed for AI coding assistants (e.g., Antigravity, Claude Code,
   1. **Academic Calendar**: Important academic dates, semester start/end dates, exam periods, registration windows, and holidays.
   2. **Course Search**: Querying the college course catalog by keyword, course code, or department name.
   3. **Course Schedules**: Detailed group slots, lecture/lab schedules, assigned professors, days, hours, and classrooms.
+- **Query source**: Every MCP tool and resource **always serves scraped data from the database** (Cloudflare D1, or the bundled scraped seed if D1 has no row). **Never hardcoded dates, hours, instructors, credits, or syllabus text.** If nothing scraped is stored, return an error — do not invent a fallback.
 - **Protocol**: Implements standard MCP (Model Context Protocol) over JSON-RPC 2.0 over HTTP POST (`/mcp`).
 - **Platform**: Serverless Cloudflare Workers (V8 edge isolates).
 
@@ -112,7 +113,9 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
    - Cloudflare Workers are stateless and short-lived.
    - Do NOT introduce persistent filesystem operations, long-lived background timers (`setInterval`), or Node.js native binary dependencies (`fs`, `child_process`).
 2. **Universal Database Architecture (Zero Live Scraping on Queries)**:
-   - All MCP tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`, `get_course_syllabus`) and resources (`braude://calendar/current`) **query Cloudflare D1 or the bundled seed (`src/data/db_seed.json`)**.
+   - The MCP **always serves from the database**. All tool calls (`get_academic_calendar`, `search_courses`, `get_course_schedule`, `get_course_syllabus`) and resources (`braude://calendar/current`) **query Cloudflare D1**, then the bundled scraped seed (`src/data/db_seed.json`) if D1 has no row. The seed is a scrape snapshot, not hardcoded content.
+   - **Never serve hardcoded data** (calendar dates, hours, instructors, credits, syllabus text, or year labels). Do not keep baked-in event tables or placeholder generators in query handlers.
+   - If nothing scraped is stored, return an error (`isError: true`). If a scrape fails, keep and serve the last successful D1/seed snapshot — never substitute invented data.
    - Pass `c.env.DB` through `handleMcpRequest` into the tool handlers. Do not call scrapers from tool handlers.
    - **No user query should ever make an outbound network call to Braude's servers during runtime.**
 3. **Serve only scraped course data**:
@@ -125,7 +128,8 @@ When modifying or expanding this codebase, AI agents MUST strictly adhere to the
    - GET query-string year filters (`R1C39=2027`) are **ignored** by FireFly. Session cookies + POST are required.
    - Implementation: [src/scrapers/firefly.ts](src/scrapers/firefly.ts).
 5. **Periodic Background Ingestion (Every 3 Days)**:
-   - Cron (`0 0 */3 * *`) and `POST /sync` run [src/scrapers/sync.ts](src/scrapers/sync.ts): year switch, latest-year catalog (`S_LOOK_FOR_NOSE_AB`), weekly timetable (`S_YFineDate`), **full public syllabus PDFs**, calendar, persist to D1.
+   - Cron (`0 0 */3 * *`) and `POST /sync` run [src/scrapers/sync.ts](src/scrapers/sync.ts): year switch, latest-year catalog (`S_LOOK_FOR_NOSE_AB`), weekly timetable (`S_YFineDate`), **full public syllabus PDFs**, and the **academic calendar** page, persist to D1.
+   - Calendar scrape is independent of catalog scrape. If the calendar fetch fails, D1 keeps the last successful snapshot. MCP never serves hardcoded calendar dates. If nothing scraped is stored, tools return an error.
    - Syllabus PDFs are fetched from `https://info.braude.ac.il/info/{year}/{paddedCode}.pdf`, extracted in full to `syllabus_text`, and upserted into D1 during the same 3-day job as the catalog. Existing D1 PDF text is overlaid before replaceAll so a timeout cannot wipe syllabi.
    - After deploy, the owner triggers `POST /sync` with `Authorization: Bearer $SYNC_SECRET` (`wrangler secret put SYNC_SECRET`). Never ship an open `/sync`.
    - Rebuild timetable seed with `npm run refresh-seed`. Then `npm run enrich-seed` to scrape per-course credits (נקודות זכות), פרשיית לימוד, and syllabus PDF text (resumable locally).
@@ -191,5 +195,5 @@ Do not leave `/sync` unauthenticated. Cron (`scheduled`) still runs without HTTP
 ## 📌 Code Conventions & Quality Rules
 
 - **Strict TypeScript**: Keep `noImplicitAny`, `strictNullChecks`, and `noUnusedLocals` clean.
-- **Error Handling**: Scrapers should catch network/parsing failures and throw clean, descriptive error messages that tool wrappers can capture safely without crashing the Worker.
+- **Error Handling**: Scrapers should catch network/parsing failures and throw clean, descriptive error messages that tool wrappers can capture safely without crashing the Worker. MCP query handlers must return that error (or prior scraped DB data), never hardcoded substitutes.
 - **Import Statements**: Use standard ES module imports with `.js` extensions for local module paths (e.g., `import { handleMcpRequest } from './mcp/server.js'`), as required by Node/Worker ES Modules TS configuration.

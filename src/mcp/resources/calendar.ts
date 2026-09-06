@@ -4,6 +4,9 @@ export async function handleReadCurrentCalendar(db?: D1Database): Promise<{
   contents: Array<{ uri: string; mimeType: string; text: string }>;
 }> {
   const calendarData = await getAcademicCalendarFromDb(undefined, db);
+  if (!calendarData.years.length) {
+    throw new Error('Academic calendar is unavailable: no scraped calendar is stored.');
+  }
   return {
     contents: [
       {

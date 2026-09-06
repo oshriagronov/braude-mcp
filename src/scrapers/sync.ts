@@ -9,12 +9,14 @@ import { fallbackAcademicYear, openLatestYearSessionWithRetry } from './firefly.
 import { ingestSyllabusPdfs } from './syllabus_pdf.js';
 import {
   applyStoredSyllabi,
+  isScrapedCalendar,
   loadCourseSyllabiFromDb,
+  persistAcademicCalendar,
   syncDatabaseFromScrape,
   upsertCourseSyllabi,
   type D1Database,
 } from '../db/client.js';
-import type { CourseScheduleDetail, CourseSummary } from '../types/index.js';
+import type { AcademicCalendarData, CourseScheduleDetail, CourseSummary } from '../types/index.js';
 
 export interface SyncOptions {
   /** Fetch per-course FireFly HTML details (credits, rooms). Off by default so /sync stays within Worker limits. */
@@ -50,12 +52,19 @@ export async function scrapeLatestSnapshot(
   latestYear: string;
   courses: CourseSummary[];
   schedules: Record<string, CourseScheduleDetail>;
-  calendar: Awaited<ReturnType<typeof fetchAcademicCalendar>>;
+  calendar?: AcademicCalendarData;
   detailsCount: number;
 }> {
   const session = await openLatestYearSessionWithRetry(timeoutMs);
   const latestYear = academicYearRange(session.year);
-  const calendarPromise = fetchAcademicCalendar(latestYear);
+  // Full calendar (all published years). No HTML fallback — scrape failure keeps prior D1/seed.
+  const calendarPromise = fetchAcademicCalendar(undefined, false)
+    .then((data) => (isScrapedCalendar(data) ? data : undefined))
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[SYNC] Calendar scrape failed; keeping previously stored calendar. ${message}`);
+      return undefined;
+    });
 
   // FireFly session POSTs must stay sequential — the portal is cookie-stateful.
   const courses = await fetchAllCoursesCatalog(session.year, timeoutMs, session);
@@ -112,7 +121,7 @@ export async function syncCatalogAndCalendar(
     coursesCount = snapshot.courses.length;
     schedulesCount = Object.keys(snapshot.schedules).length;
     detailsCount = snapshot.detailsCount;
-    calendarSynced = !!snapshot.calendar;
+    calendarSynced = isScrapedCalendar(snapshot.calendar);
 
     if (db) {
       const stored = await loadCourseSyllabiFromDb(db);
@@ -124,11 +133,17 @@ export async function syncCatalogAndCalendar(
     if (db && (snapshot.courses.length > 0 || Object.keys(snapshot.schedules).length > 0)) {
       await syncDatabaseFromScrape(db, {
         courses: snapshot.courses,
-        calendar: snapshot.calendar,
         schedules: snapshot.schedules,
         replaceAll: true,
       });
       console.log('[SYNC] Persisted catalog and timetable into Cloudflare D1.');
+    }
+
+    if (db && snapshot.calendar && isScrapedCalendar(snapshot.calendar)) {
+      await persistAcademicCalendar(db, snapshot.calendar);
+      console.log('[SYNC] Persisted scraped academic calendar into Cloudflare D1.');
+    } else if (!calendarSynced) {
+      console.warn('[SYNC] Calendar not refreshed; MCP will keep serving the last scraped calendar.');
     }
 
     if (ingestPdfs) {

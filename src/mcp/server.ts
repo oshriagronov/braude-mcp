@@ -13,7 +13,7 @@ export const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: 'get_academic_calendar',
     description:
-      'Fetches and parses the academic calendar from Ort Braude College (semester start/end, exam periods, holidays).',
+      'Returns the scraped academic calendar from the database (semester dates, exam periods, holidays). Scraped every 3 days. Never live-fetches. If a year filter matches nothing, years is empty; if nothing has been scraped, the tool errors instead of inventing dates.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -116,7 +116,7 @@ describe('MCP Pure Database Query Integration Tests', () => {
         method: 'tools/call',
         params: {
           name: 'get_academic_calendar',
-          arguments: { year: '2025-2026' },
+          arguments: { year: '2026-2027' },
         },
       }),
     });
@@ -129,7 +129,7 @@ describe('MCP Pure Database Query Integration Tests', () => {
 
     const calendar: AcademicCalendarData = JSON.parse(json.result.content[0].text);
     expect(calendar.years.length).toBe(1);
-    expect(calendar.years[0].academicYear).toContain('תשפ"ו');
+    expect(calendar.years[0].academicYear).toContain('תשפ"ז');
 
     // Assert zero outbound network calls
     expect(fetchSpy).not.toHaveBeenCalled();

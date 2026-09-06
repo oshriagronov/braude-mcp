@@ -54,7 +54,7 @@ describe('Academic Calendar MCP Integration Suite (M2)', () => {
         params: {
           name: 'get_academic_calendar',
           arguments: {
-            year: '2025-2026',
+            year: '2026-2027',
           },
         },
       };
@@ -71,7 +71,10 @@ describe('Academic Calendar MCP Integration Suite (M2)', () => {
       const calendarData = JSON.parse(data.result.content[0].text) as AcademicCalendarData;
       expect(
         calendarData.years.every(
-          (y) => y.academicYear.includes('2025-2026') || y.academicYear.includes('תשפ"ו')
+          (y) =>
+            y.academicYear.includes('2026-2027') ||
+            y.academicYear.includes('2027-2026') ||
+            y.academicYear.includes('תשפ"ז')
         )
       ).toBe(true);
     });

@@ -167,15 +167,22 @@ describe('Database & Catalog Unit Tests', () => {
       const calendar = await getAcademicCalendarFromDb();
       expect(calendar.years.length).toBeGreaterThan(0);
       const yr = calendar.years[0];
+      expect(yr.academicYear).toContain('תשפ"ז');
       expect(yr.semesterA.length).toBeGreaterThan(0);
       expect(yr.semesterB.length).toBeGreaterThan(0);
-      expect(yr.generalEvents.some((e) => e.category === 'holiday')).toBe(true);
+      expect(yr.semesterA.some((e) => e.startDate === '2025-10-19')).toBe(false);
+      expect(
+        yr.summerSemester?.some((e) => e.category === 'holiday') ||
+          yr.generalEvents.some((e) => e.category === 'holiday') ||
+          yr.semesterA.some((e) => e.category === 'holiday') ||
+          yr.semesterB.some((e) => e.category === 'holiday')
+      ).toBe(true);
     });
 
     it('filters academic calendar by year cleanly', async () => {
-      const calendar2526 = await getAcademicCalendarFromDb('2025-2026');
-      expect(calendar2526.years.length).toBe(1);
-      expect(calendar2526.years[0].academicYear).toContain('תשפ"ו');
+      const calendar2627 = await getAcademicCalendarFromDb('2026-2027');
+      expect(calendar2627.years.length).toBe(1);
+      expect(calendar2627.years[0].academicYear).toContain('תשפ"ז');
 
       const nonExistent = await getAcademicCalendarFromDb('1990-1991');
       expect(nonExistent.years.length).toBe(0);

@@ -4,7 +4,6 @@ import type {
   CourseSyllabusDetail,
   CourseGroup,
   AcademicCalendarData,
-  AcademicYearCalendar,
   CalendarEvent,
 } from '../types/index.js';
 import { attachSyllabusContent } from '../scrapers/syllabus_content.js';
@@ -316,129 +315,174 @@ export function matchesYearFilter(academicYear: string, filter: string): boolean
   return false;
 }
 
+export function isScrapedCalendar(data: unknown): data is AcademicCalendarData {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return false;
+  }
+  const calendar = data as AcademicCalendarData;
+  return (
+    typeof calendar.sourceUrl === 'string' &&
+    calendar.sourceUrl.includes('braude.ac.il') &&
+    typeof calendar.fetchedAt === 'string' &&
+    Array.isArray(calendar.years) &&
+    calendar.years.length > 0
+  );
+}
+
+function filterScrapedCalendar(data: AcademicCalendarData, year?: string): AcademicCalendarData {
+  if (!year || year.trim().length === 0) {
+    return data;
+  }
+  return {
+    ...data,
+    years: data.years.filter((y) => matchesYearFilter(y.academicYear, year)),
+  };
+}
+
+function seedCalendar(): AcademicCalendarData | undefined {
+  const raw = (dbSeedData as { calendar?: unknown }).calendar;
+  return isScrapedCalendar(raw) ? raw : undefined;
+}
+
+async function ensureCalendarTables(db: D1Database): Promise<void> {
+  await db.exec(
+    `CREATE TABLE IF NOT EXISTS calendar_snapshot (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      source_url TEXT NOT NULL,
+      fetched_at TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`
+  );
+  try {
+    await db.prepare('ALTER TABLE academic_calendar ADD COLUMN semester_group TEXT').run();
+  } catch {
+    // Column already exists
+  }
+  try {
+    await db.prepare('ALTER TABLE academic_calendar ADD COLUMN raw_date_str TEXT').run();
+  } catch {
+    // Column already exists
+  }
+}
+
+function flattenCalendarEvents(
+  calendar: AcademicCalendarData
+): Array<{
+  academicYear: string;
+  event: CalendarEvent;
+  semesterGroup: string;
+}> {
+  const rows: Array<{ academicYear: string; event: CalendarEvent; semesterGroup: string }> = [];
+  for (const year of calendar.years) {
+    for (const event of year.semesterA || []) {
+      rows.push({ academicYear: year.academicYear, event, semesterGroup: 'A' });
+    }
+    for (const event of year.semesterB || []) {
+      rows.push({ academicYear: year.academicYear, event, semesterGroup: 'B' });
+    }
+    for (const event of year.summerSemester || []) {
+      rows.push({ academicYear: year.academicYear, event, semesterGroup: 'summer' });
+    }
+    for (const event of year.generalEvents || []) {
+      rows.push({ academicYear: year.academicYear, event, semesterGroup: 'general' });
+    }
+  }
+  return rows;
+}
+
 /**
- * Retrieves academic calendar from Cloudflare D1 or the bundled database store
+ * Writes a freshly scraped calendar into D1. Call only when scrape succeeded.
+ * Does not run on scrape failure, so the previous snapshot stays.
+ */
+export async function persistAcademicCalendar(
+  db: D1Database,
+  calendar: AcademicCalendarData
+): Promise<void> {
+  if (!isScrapedCalendar(calendar)) {
+    return;
+  }
+  await ensureCalendarTables(db);
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO calendar_snapshot (id, source_url, fetched_at, payload, updated_at)
+       VALUES (1, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         source_url = excluded.source_url,
+         fetched_at = excluded.fetched_at,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`
+    )
+    .bind(calendar.sourceUrl, calendar.fetchedAt, JSON.stringify(calendar), now)
+    .run();
+
+  await db.prepare('DELETE FROM academic_calendar').run();
+  const eventRows = flattenCalendarEvents(calendar);
+  const statements: D1PreparedStatement[] = [];
+  for (const row of eventRows) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO academic_calendar
+             (academic_year, event_name, event_category, start_date, end_date, description, semester_group, raw_date_str, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          row.academicYear,
+          row.event.title,
+          row.event.category,
+          row.event.startDate || '',
+          row.event.endDate || null,
+          row.event.rawDateStr || null,
+          row.semesterGroup,
+          row.event.rawDateStr || null,
+          now
+        )
+    );
+  }
+  for (let i = 0; i < statements.length; i += 50) {
+    await db.batch(statements.slice(i, i + 50));
+  }
+}
+
+async function loadCalendarSnapshotFromDb(db: D1Database): Promise<AcademicCalendarData | undefined> {
+  try {
+    await ensureCalendarTables(db);
+    const row = await db
+      .prepare('SELECT payload FROM calendar_snapshot WHERE id = 1')
+      .first<{ payload: string }>();
+    if (!row?.payload) {
+      return undefined;
+    }
+    const parsed: unknown = JSON.parse(row.payload);
+    return isScrapedCalendar(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Retrieves scraped academic calendar from D1, then the bundled scrape seed.
+ * Never returns hardcoded dates. Throws if no scraped calendar is stored.
  */
 export async function getAcademicCalendarFromDb(
   year?: string,
   db?: D1Database
 ): Promise<AcademicCalendarData> {
-  const rawCalendar = dbSeedData.calendar as any;
-
-  // Build Year 2025-2026 (תשפ"ו)
-  const semA_2526: CalendarEvent[] = [
-    {
-      title: "פתיחת סמסטר א'",
-      startDate: '2025-10-19',
-      category: 'semester_start',
-    },
-    {
-      title: "סיום סמסטר א'",
-      startDate: '2026-01-23',
-      category: 'semester_end',
-    },
-    {
-      title: "בחינות מועד א' - סמסטר א'",
-      startDate: '2026-01-25',
-      endDate: '2026-02-20',
-      category: 'exam_period',
-    },
-    {
-      title: "בחינות מועד ב' - סמסטר א'",
-      startDate: '2026-02-22',
-      endDate: '2026-03-20',
-      category: 'exam_period',
-    },
-  ];
-
-  const semB_2526: CalendarEvent[] = [
-    {
-      title: "פתיחת סמסטר ב'",
-      startDate: '2026-03-08',
-      category: 'semester_start',
-    },
-    {
-      title: "סיום סמסטר ב'",
-      startDate: '2026-06-26',
-      category: 'semester_end',
-    },
-    {
-      title: "בחינות מועד א' - סמסטר ב'",
-      startDate: '2026-06-28',
-      endDate: '2026-07-24',
-      category: 'exam_period',
-    },
-    {
-      title: "בחינות מועד ב' - סמסטר ב'",
-      startDate: '2026-07-26',
-      endDate: '2026-08-28',
-      category: 'exam_period',
-    },
-  ];
-
-  const summer_2526: CalendarEvent[] = [
-    {
-      title: 'פתיחת סמסטר קיץ',
-      startDate: '2026-07-12',
-      category: 'semester_start',
-    },
-    {
-      title: 'סיום סמסטר קיץ',
-      startDate: '2026-09-04',
-      category: 'semester_end',
-    },
-  ];
-
-  const general_2526: CalendarEvent[] = [
-    { title: 'ראש השנה', startDate: '2025-09-22', endDate: '2025-09-24', category: 'holiday' },
-    { title: 'יום כיפור', startDate: '2025-10-01', endDate: '2025-10-02', category: 'holiday' },
-    { title: 'סוכות ושמחת תורה', startDate: '2025-10-06', endDate: '2025-10-14', category: 'holiday' },
-    { title: 'חנוכה', startDate: '2025-12-15', endDate: '2025-12-22', category: 'holiday' },
-    { title: 'פורים', startDate: '2026-03-03', endDate: '2026-03-04', category: 'holiday' },
-    { title: 'פסח', startDate: '2026-04-01', endDate: '2026-04-08', category: 'holiday' },
-    { title: 'יום הזיכרון ויום העצמאות', startDate: '2026-04-21', endDate: '2026-04-23', category: 'holiday' },
-    { title: 'שבועות', startDate: '2026-05-21', endDate: '2026-05-22', category: 'holiday' },
-    { title: "רישום לקורסים ושינויי מערכת - סמסטר א'", startDate: '2025-08-01', endDate: '2025-10-10', category: 'registration' },
-    { title: "רישום לקורסים ושינויי מערכת - סמסטר ב'", startDate: '2026-01-15', endDate: '2026-02-28', category: 'registration' },
-  ];
-
-  // Build Year 2024-2025 (תשפ"ה)
-  const semA_2425: CalendarEvent[] = [
-    { title: "סמסטר א'", startDate: '2024-11-03', endDate: '2025-01-31', category: 'semester_start' },
-  ];
-  const semB_2425: CalendarEvent[] = [
-    { title: "סמסטר ב'", startDate: '2025-03-09', endDate: '2025-06-20', category: 'semester_start' },
-  ];
-  const general_2425: CalendarEvent[] = [
-    { title: 'חופשת פסח', startDate: '2025-04-13', endDate: '2025-04-20', category: 'holiday' },
-  ];
-
-  const allYears: AcademicYearCalendar[] = [
-    {
-      academicYear: 'לוח שנה אקדמית תשפ"ו 2026-2025',
-      semesterA: semA_2526,
-      semesterB: semB_2526,
-      summerSemester: summer_2526,
-      generalEvents: general_2526,
-    },
-    {
-      academicYear: 'לוח שנה אקדמית תשפ"ה 2025-2024',
-      semesterA: semA_2425,
-      semesterB: semB_2425,
-      generalEvents: general_2425,
-    },
-  ];
-
-  let filteredYears = allYears;
-  if (year && year.trim().length > 0) {
-    filteredYears = allYears.filter((y) => matchesYearFilter(y.academicYear, year));
+  if (db) {
+    const stored = await loadCalendarSnapshotFromDb(db);
+    if (stored) {
+      return filterScrapedCalendar(stored, year);
+    }
   }
 
-  return {
-    sourceUrl: 'https://w3.braude.ac.il/academic-calendar/',
-    fetchedAt: rawCalendar.fetchedAt || new Date().toISOString(),
-    years: filteredYears,
-  };
+  const seed = seedCalendar();
+  if (seed) {
+    return filterScrapedCalendar(seed, year);
+  }
+
+  throw new Error('Academic calendar is unavailable: no scraped calendar is stored.');
 }
 
 export interface StoredSyllabus {

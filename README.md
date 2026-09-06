@@ -26,7 +26,7 @@ This server enables AI assistants (such as Claude, Codex, Cursor, Windsurf, Gemi
 
 | Tool Name | Description | Example Arguments |
 |---|---|---|
-| `get_academic_calendar` | Fetches academic calendar events, semester start/end dates, exam periods, registration dates, and holidays from the database. | `{ "year": "2026-2027" }` or `{}` (defaults to current year) |
+| `get_academic_calendar` | Scraped academic calendar from D1/seed (semester dates, exams, holidays). Updated every 3 days. Errors if nothing has been scraped; does not invent dates. | `{ "year": "2026-2027" }` or `{}` |
 | `search_courses` | Searches the **latest academic year** catalog (currently 571 taught courses) by keyword, code, or department name. | `{ "query": "אלגברה" }` or `{ "query": "תוכנה", "department": "הנדסת תוכנה" }` |
 | `get_course_schedule` | Comprehensive course record from the database: weekly slots, instructors, rooms, credits, and ingested syllabus PDF (attendance / חובת נוכחות, grading, exam, topics). | `{ "courseCode": "61767" }` or `{ "courseCode": "62005" }` |
 | `get_course_syllabus` | Full ingested syllabus plus parsed sections: whether attendance is required, grading/exam rules, topics, objectives, AI policy, and the site schedule. Do not fetch the PDF URL. | `{ "courseCode": "61767" }` |

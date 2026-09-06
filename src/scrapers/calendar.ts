@@ -9,6 +9,7 @@ import { globalCache } from '../utils/cache.js';
 
 export const CALENDAR_URL = 'https://w3.braude.ac.il/calander-newsletter/';
 
+/** Fixture HTML for scraper unit tests only. MCP query handlers never serve this. */
 export const FALLBACK_CALENDAR_HTML = `
 <!DOCTYPE html>
 <html lang="he-IL">
